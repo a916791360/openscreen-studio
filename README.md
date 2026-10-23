@@ -1,5 +1,10 @@
 # 🎬 OpenScreen Studio · 软件教程自动化视频工作台
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Author](https://img.shields.io/badge/Author-杨冉-orange.svg)](https://github.com/a916791360)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-brightgreen.svg)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey.svg)]()
+
 > **“录屏动效自动卡点，AI 大模型严控时长，免 Key 主持人级配音，一键音画字幕秒级出片。”**  
 > 专为制作高质量 SaaS 功能演示、后台系统操作教程、产品更新讲解打造的现代化工作台。
 
@@ -204,5 +209,12 @@ openscreen-studio/
 
 ---
 
-## 📄 开源与隐私协议
-- 本项目严格保证用户隐私：所有视频与声音处理均在本地离线执行；大模型调用仅请求用户配置的官方 API 地址；绝不包含任何硬编码凭据。
+## 📄 开源许可与版权声明 (License & Copyright)
+
+- **作者与发起人**：本项目由 **杨冉 ([@a916791360](https://github.com/a916791360))** 构思、设计与主导研发并开源。
+- **开源协议**：本项目采用 **[MIT License](LICENSE)** 开放源代码，允许个人及团队自由二次开发、定制与集成。
+- **第一权益与署名保障**：根据 MIT 协议法律条款，任何第三方分发、二次开发或基于本项目修改衍生时，**必须在所有副本或重要部分中完整保留原作者署名及原始版权声明**：
+  ```text
+  Copyright (c) 2026 杨冉 (https://github.com/a916791360)
+  ```
+- **隐私与安全**：所有视频剪辑、声音合成与字幕压制均在本地离线执行；大模型调用仅直接请求用户填写的官方 API，绝不包含任何第三方遥测或凭据上传。

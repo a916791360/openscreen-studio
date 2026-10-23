@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 杨冉 (https://github.com/a916791360)
+# SPDX-License-Identifier: MIT
 """
 OpenScreen Studio 专属音色高保真合成与时间轴对齐引擎
+Copyright (c) 2026 杨冉 (https://github.com/a916791360)
+SPDX-License-Identifier: MIT
 - 基于 F5-TTS 内存级自适应神经推理
 - 独创【原文原生时间轴对齐 (Verbatim Native Alignment)】：
   杜绝传统 ASR 语音识别带来的同音错别字（如将“工单”识别为“供丹”）与吞字漏字问题，

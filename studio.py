@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 杨冉 (https://github.com/a916791360)
+# SPDX-License-Identifier: MIT
 """
-OpenScreen 视频教程 AI 配音与字幕工作台 (Workbench Edition)
+OpenScreen Studio · 软件教程自动化视频工作台
+Copyright (c) 2026 杨冉 (https://github.com/a916791360)
+SPDX-License-Identifier: MIT
 Hallmark Macrostructure: 05 · Workbench
 Tone: Utilitarian / Technical Slate
 Anti-AI-slop design: 零塑料渐变 · 严格时间轴字数拟合 · 精密工业级控制台

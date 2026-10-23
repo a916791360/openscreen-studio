@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 杨冉 (https://github.com/a916791360)
+# SPDX-License-Identifier: MIT
 """
 AI 视频教程解说词智能生成与时长自适应引擎
+Copyright (c) 2026 杨冉 (https://github.com/a916791360)
+SPDX-License-Identifier: MIT
 核心哲学：
   1. 真实操作由用户主导：绝不脱离用户操作要点胡编乱造菜单或步骤
   2. 严卡时间轴预算：根据视频物理秒数，智能执行双向拟合（短文本扩写润色 / 长文本脱水压缩）
