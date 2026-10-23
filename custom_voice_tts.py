@@ -41,8 +41,11 @@ def _safe_save_audio(filepath, tensor, sample_rate, *args, **kwargs):
 torchaudio.load = _safe_load_audio
 torchaudio.save = _safe_save_audio
 
+from importlib.resources import files
+from omegaconf import OmegaConf
+from hydra.utils import get_class
 from cached_path import cached_path
-from f5_tts.infer.utils_infer import load_model, load_vocoder, infer_process
+from f5_tts.infer.utils_infer import load_model, load_vocoder, infer_process, preprocess_ref_audio_text
 from f5_tts.model import DiT
 
 CUSTOM_VOICE_DIR = BASE_DIR / "custom_voice"
@@ -98,11 +101,15 @@ def synthesize_custom_voice(text: str, output_audio: Path, output_srt: Path, spe
     device = get_optimal_device()
 
     print(f"🎙️ [1/3] 正在加载 F5-TTS 专属模型 (设备: {device})...")
+    model_cfg = OmegaConf.load(str(files("f5_tts").joinpath("configs/F5TTS_Base.yaml")))
+    model_cls = get_class(f"f5_tts.model.{model_cfg.model.backbone}")
+    model_arc = model_cfg.model.arch
+
     ckpt_file = str(cached_path("hf://SWivid/F5-TTS/F5TTS_Base/model_1200000.safetensors"))
-    model_cls = DiT
-    model_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
     vocoder = load_vocoder(vocoder_name="vocos", is_local=False, local_path="", device=device)
-    ema_model = load_model(model_cls, model_cfg, ckpt_file, mel_spec_type="vocos", device=device)
+    ema_model = load_model(model_cls, model_arc, ckpt_file, mel_spec_type="vocos", device=device)
+
+    pre_ref_audio, pre_ref_text = preprocess_ref_audio_text(str(active_ref_audio), active_ref_text)
 
     segments = split_script_into_segments(text)
     print(f"✨ [2/3] 开始逐句精准合成与原生字轨时间轴锚定 (共 {len(segments)} 个分镜字幕)...")
@@ -116,8 +123,8 @@ def synthesize_custom_voice(text: str, output_audio: Path, output_srt: Path, spe
     for idx, seg_text in enumerate(segments):
         print(f"   [{idx + 1}/{len(segments)}] 正在生成: {seg_text[:24]}...")
         wave, sr, _ = infer_process(
-            str(active_ref_audio),
-            active_ref_text,
+            pre_ref_audio,
+            pre_ref_text,
             seg_text,
             ema_model,
             vocoder,
