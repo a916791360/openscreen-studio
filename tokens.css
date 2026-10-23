@@ -1,0 +1,98 @@
+/* Hallmark · macrostructure: Workbench · tone: utilitarian · anchor hue: 215 */
+:root, [data-theme="dark"] {
+  /* Surface Tokens (High-Contrast Layered Slate) */
+  --color-paper: #0c1017;           /* Level 0: Desk / Canvas Base */
+  --color-paper-2: #161d27;         /* Level 1: Primary Module / Card Surfaces */
+  --color-paper-3: #202937;         /* Level 2: Child Item / Elevated Interactive */
+  --color-paper-elevated: #283345;  /* Level 3: Dropdowns / Floats */
+  --color-well: #0e131b;            /* Recessed Inset Wells (Player, Timelines, Textarea) */
+  --color-surface-hover: #263142;
+  --color-surface-active: #1e3a5f;
+  --header-bg: #121720;
+  --card-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+
+  /* Ink Tokens */
+  --color-ink: #f8fafc;
+  --color-ink-muted: #cbd5e1;
+  --color-ink-subtle: #94a3b8;
+  --color-ink-faint: #64748b;
+
+  /* Border / Hairline Tokens */
+  --color-border: #334155;
+  --color-border-subtle: #242f3d;
+  --color-border-focus: #38bdf8;
+
+  /* Functional Status Accents */
+  --color-accent: #38bdf8;
+  --color-accent-subtle: rgba(56, 189, 248, 0.15);
+  --color-accent-hover: #7dd3fc;
+  --color-success: #34d399;
+  --color-success-subtle: rgba(52, 211, 153, 0.15);
+  --color-warning: #fbbf24;
+  --color-warning-subtle: rgba(251, 191, 36, 0.15);
+  --color-danger: #f87171;
+
+  /* Typography */
+  --font-display: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", Roboto, sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* Type Scale */
+  --text-xs: 0.6875rem;   /* 11px */
+  --text-sm: 0.8125rem;   /* 13px */
+  --text-base: 0.875rem;  /* 14px */
+  --text-lg: 1.0625rem;   /* 17px */
+  --text-xl: 1.25rem;     /* 20px */
+  --text-2xl: 1.5rem;     /* 24px */
+
+  /* 4-pt Spacing Scale */
+  --space-2xs: 0.25rem;  /* 4px */
+  --space-xs: 0.5rem;    /* 8px */
+  --space-sm: 0.75rem;   /* 12px */
+  --space-md: 1rem;      /* 16px */
+  --space-lg: 1.5rem;    /* 24px */
+  --space-xl: 2rem;      /* 32px */
+  --space-2xl: 3rem;     /* 48px */
+
+  /* Motion Primitives (Motion-cut, strictly utilitarian) */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur-medium: 200ms;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 9999px;
+}
+
+[data-theme="light"] {
+  --color-paper: #f1f5f9;
+  --color-paper-2: #ffffff;
+  --color-paper-3: #f1f5f9;
+  --color-paper-elevated: #e2e8f0;
+  --color-well: #f8fafc;
+  --color-surface-hover: #e2e8f0;
+  --color-surface-active: #e0f2fe;
+  --header-bg: #f8fafc;
+  --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+
+  --color-ink: #0f172a;
+  --color-ink-muted: #334155;
+  --color-ink-subtle: #64748b;
+  --color-ink-faint: #94a3b8;
+
+  --color-border: #cbd5e1;
+  --color-border-subtle: #e2e8f0;
+  --color-border-focus: #0284c7;
+
+  --color-accent: #0284c7;
+  --color-accent-subtle: rgba(2, 132, 199, 0.12);
+  --color-accent-hover: #0369a1;
+  --color-success: #059669;
+  --color-success-subtle: rgba(5, 150, 105, 0.12);
+  --color-warning: #d97706;
+  --color-warning-subtle: rgba(217, 119, 6, 0.12);
+  --color-danger: #ef4444;
+}
+}
