@@ -20,7 +20,27 @@ from pathlib import Path
 # 中文自然朗读语速（字/秒，包含字间停顿，以 Edge-TTS 神经网络男/女声为实测基准）
 CHARS_PER_SECOND = 4.3
 
-OPENSCREEN_RECORDINGS_DIR = Path.home() / "Library/Application Support/openscreen/recordings"
+def get_openscreen_recordings_dir() -> Path:
+    """跨平台动态获取 OpenScreen 录屏工程存储目录 (支持 macOS, Windows, Linux)"""
+    import sys
+    if sys.platform == 'win32':
+        app_data = os.environ.get('APPDATA')
+        if app_data:
+            p = Path(app_data) / 'openscreen/recordings'
+            if p.exists():
+                return p
+        return Path.home() / 'AppData/Roaming/openscreen/recordings'
+    elif sys.platform == 'darwin':
+        return Path.home() / 'Library/Application Support/openscreen/recordings'
+    else:
+        xdg_config = os.environ.get('XDG_CONFIG_HOME')
+        if xdg_config:
+            p = Path(xdg_config) / 'openscreen/recordings'
+            if p.exists():
+                return p
+        return Path.home() / '.config/openscreen/recordings'
+
+OPENSCREEN_RECORDINGS_DIR = get_openscreen_recordings_dir()
 CONFIG_FILE = Path(__file__).resolve().parent / "llm_config.json"
 
 def normalize_api_url(url: str) -> str:

@@ -47,7 +47,7 @@ fi
 mkdir -p output uploads
 
 # 5. 启动 Studio 服务
-PORT=8765
+PORT="${PORT:-8765}"
 echo "🚀 正在启动工作台服务器: http://localhost:$PORT ..."
 
 # 如果端口已被旧进程占用，先优雅提示
@@ -56,7 +56,7 @@ if lsof -Pi :$PORT -sTCP:LISTEN -t >/dev/null ; then
 fi
 
 # 启动服务
-python3 studio.py &
+python3 studio.py "$PORT" &
 SERVER_PID=$!
 
 sleep 1.2

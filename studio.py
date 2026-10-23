@@ -12,6 +12,7 @@ Anti-AI-slop design: 零塑料渐变 · 严格时间轴字数拟合 · 精密工
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -36,9 +37,37 @@ from ai_script_generator import (
     CHARS_PER_SECOND
 )
 
-PORT = 8765
+PORT = int(os.environ.get("PORT", 8765))
 BASE_DIR = Path(__file__).resolve().parent
-RECORDINGS_DIR = Path.home() / "Library/Application Support/openscreen/recordings"
+
+def get_openscreen_recordings_dir() -> Path:
+    """跨平台动态获取 OpenScreen 录屏工程存储目录 (支持 macOS, Windows, Linux)"""
+    if sys.platform == 'win32':
+        app_data = os.environ.get('APPDATA')
+        if app_data:
+            p = Path(app_data) / 'openscreen/recordings'
+            if p.exists():
+                return p
+        return Path.home() / 'AppData/Roaming/openscreen/recordings'
+    elif sys.platform == 'darwin':
+        return Path.home() / 'Library/Application Support/openscreen/recordings'
+    else:
+        xdg_config = os.environ.get('XDG_CONFIG_HOME')
+        if xdg_config:
+            p = Path(xdg_config) / 'openscreen/recordings'
+            if p.exists():
+                return p
+        return Path.home() / '.config/openscreen/recordings'
+
+def get_subtitle_font() -> str:
+    """根据操作系统选用最优中文字体，避免 Windows/Linux 缺少苹方产生乱码"""
+    if sys.platform == 'win32':
+        return 'Microsoft YaHei'
+    elif sys.platform == 'darwin':
+        return 'PingFang SC'
+    return 'Noto Sans CJK SC'
+
+RECORDINGS_DIR = get_openscreen_recordings_dir()
 DOWNLOADS_DIR = Path.home() / "Downloads"
 UPLOADS_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "output"
@@ -1975,9 +2004,10 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 # FFmpeg 压制合成 (Apple 风格紧凑黑底居中字幕)
                 if burn_subs and srt_path.exists():
                     escaped_srt = str(srt_path.resolve()).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+                    sub_font = get_subtitle_font()
                     sub_filter = (
                         f"subtitles='{escaped_srt}':force_style="
-                        f"'Fontname=PingFang SC,FontSize={font_size},PrimaryColour=&H00FFFFFF,OutlineColour=&H75000000,"
+                        f"'Fontname={sub_font},FontSize={font_size},PrimaryColour=&H00FFFFFF,OutlineColour=&H75000000,"
                         f"BackColour=&H75000000,BorderStyle=3,Outline=2.5,Shadow=0,MarginV={margin_v}'"
                     )
                     v_filters.append(sub_filter)
@@ -2036,8 +2066,23 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             self.send_error(404, "Endpoint Not Found")
 
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), WorkbenchHandler)
-    url = f"http://localhost:{PORT}"
+    target_port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
+    server = None
+    actual_port = target_port
+
+    for p in range(target_port, target_port + 10):
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", p), WorkbenchHandler)
+            actual_port = p
+            break
+        except OSError:
+            continue
+
+    if not server:
+        print(f"❌ 错误: 端口 {target_port}~{target_port+9} 均被占用，请指定其他可用端口。")
+        sys.exit(1)
+
+    url = f"http://localhost:{actual_port}"
     print(f"\n=======================================================")
     print(f"🎬 OpenScreen Studio · 软件教程自动化工作台已启动!")
     print(f"👉 访问地址: {url}")

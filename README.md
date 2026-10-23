@@ -44,7 +44,11 @@ git clone <您的私有仓库地址>
 cd openscreen-studio
 
 # 2. 一键运行（自动创建独立虚拟环境并打开浏览器）
+# macOS / Linux 用户终端运行：
 ./start.sh
+
+# Windows 用户直接双击运行：
+start.bat
 ```
 
 > **系统依赖提示**：

@@ -1,3 +1,11 @@
+def get_subtitle_font() -> str:
+    """根据操作系统选用最优中文字体，避免 Windows/Linux 缺少苹方产生乱码"""
+    if sys.platform == 'win32':
+        return 'Microsoft YaHei'
+    elif sys.platform == 'darwin':
+        return 'PingFang SC'
+    return 'Noto Sans CJK SC'
+
 #!/usr/bin/env python3
 """
 教程视频 AI 配音与字幕生成工具 (基于 Edge-TTS & FFmpeg)
@@ -108,10 +116,11 @@ def merge_video_audio(video_path: Path, audio_path: Path, srt_path: Path, output
         # 转义路径中的特殊字符
         escaped_srt = str(srt_path.resolve()).replace(":", "\\:").replace("'", "\\'")
         # 字幕样式：白色文字、半透明黑底背景框、距底边 28 像素、苹方/思源黑体
+        sub_font = get_subtitle_font()
         sub_filter = (
             f"subtitles='{escaped_srt}':force_style="
-            "'Fontname=PingFang SC,FontSize=10.5,PrimaryColour=&H00FFFFFF,OutlineColour=&H75000000,"
-            "BackColour=&H75000000,BorderStyle=3,Outline=2.5,Shadow=0,MarginV=22'"
+            f"'Fontname={sub_font},FontSize=10.5,PrimaryColour=&H00FFFFFF,OutlineColour=&H75000000,"
+            f"BackColour=&H75000000,BorderStyle=3,Outline=2.5,Shadow=0,MarginV=22'"
         )
 
         cmd = [
