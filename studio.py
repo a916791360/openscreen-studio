@@ -67,6 +67,19 @@ def get_subtitle_font() -> str:
         return 'PingFang SC'
     return 'Noto Sans CJK SC'
 
+def get_custom_tts_python() -> str:
+    """跨平台寻找专属音色模型运行环境 (优先查找 .venv_tts 或 .venv 虚拟环境，支持 macOS/Linux 和 Windows)"""
+    candidates = [
+        BASE_DIR / ".venv_tts/bin/python",
+        BASE_DIR / ".venv_tts/Scripts/python.exe",
+        BASE_DIR / ".venv/bin/python",
+        BASE_DIR / ".venv/Scripts/python.exe",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return sys.executable
+
 RECORDINGS_DIR = get_openscreen_recordings_dir()
 DOWNLOADS_DIR = Path.home() / "Downloads"
 UPLOADS_DIR = BASE_DIR / "uploads"
@@ -1690,8 +1703,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     custom_runner = BASE_DIR / "custom_voice_tts.py"
                     ref_audio = CUSTOM_VOICE_DIR / voice_entry.get("ref_audio", "ref_clip_engineer.wav")
                     ref_text = voice_entry.get("ref_text", "工程师接单后，移动端会立即收到推送提醒，包括精准的客户地址。")
-                    venv_py = BASE_DIR / ".venv_tts/bin/python"
-                    py_bin = str(venv_py) if venv_py.exists() else sys.executable
+                    py_bin = get_custom_tts_python()
                     cmd = [
                         py_bin, str(custom_runner),
                         "--text", f"你好，我是{voice_entry['name']}，很高兴为您带来本期教程解说。",
@@ -2022,6 +2034,14 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             margin_v = 22 if font_size <= 11.5 else 26
 
             try:
+                if not shutil.which("ffmpeg"):
+                    raise RuntimeError(
+                        "系统未检测到 FFmpeg 核心工具！音视频合成与字幕压制需要 FFmpeg。\n"
+                        "👉 Windows: 打开终端运行 `winget install Gyan.FFmpeg`\n"
+                        "👉 macOS: 终端运行 `brew install ffmpeg`\n"
+                        "安装完成后重新点击导出成片即可！"
+                    )
+
                 if voice_entry.get("type") == "custom":
                     # 专属克隆音色：调用 custom_voice_tts.py
                     speed_factor = 1.0
@@ -2033,8 +2053,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     custom_runner = BASE_DIR / "custom_voice_tts.py"
                     ref_audio = CUSTOM_VOICE_DIR / voice_entry.get("ref_audio", "ref_clip_engineer.wav")
                     ref_text = voice_entry.get("ref_text", "工程师接单后，移动端会立即收到推送提醒，包括精准的客户地址。")
-                    venv_py = BASE_DIR / ".venv_tts/bin/python"
-                    py_bin = str(venv_py) if venv_py.exists() else sys.executable
+                    py_bin = get_custom_tts_python()
                     cmd = [
                         py_bin, str(custom_runner),
                         "--text", script,
@@ -2044,7 +2063,17 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                         "--ref-audio", str(ref_audio),
                         "--ref-text", ref_text
                     ]
-                    subprocess.run(cmd, check=True)
+                    run_res = subprocess.run(cmd, capture_output=True, text=True)
+                    if run_res.returncode != 0:
+                        err_msg = run_res.stderr.strip()
+                        if "f5_tts" in err_msg or "torch" in err_msg or "No module named" in err_msg:
+                            raise RuntimeError(
+                                "检测到当前环境尚未安装专属声音克隆扩展 (PyTorch / F5-TTS)！\n"
+                                "💡 建议直接在左侧选用【晓晓】、【云希】等 7 款内置标准音色（开箱即用，0 门槛秒出片）；\n"
+                                "或执行 `pip install f5-tts soundfile` 安装克隆扩展。"
+                            )
+                        else:
+                            raise RuntimeError(f"专属音色合成失败: {err_msg[-400:]}")
                 else:
                     # 1. 跑 Edge-TTS 生成音频与干净字幕
                     tts_cmd = get_edge_tts_cmd() + [
@@ -2157,6 +2186,15 @@ def main():
     print(f"🎬 OpenScreen Studio · 软件教程自动化工作台已启动!")
     print(f"👉 访问地址: {url}")
     print(f"=======================================================\n")
+
+    import webbrowser
+    def _open_browser():
+        time.sleep(1.0)
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    threading.Thread(target=_open_browser, daemon=True).start()
 
     try:
         server.serve_forever()

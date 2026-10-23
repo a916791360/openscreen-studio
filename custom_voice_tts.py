@@ -16,13 +16,17 @@ import subprocess
 from pathlib import Path
 import numpy as np
 
-# 动态确保当前虚拟环境 site-packages 在优先搜索路径
+# 动态确保当前虚拟环境 site-packages 在优先搜索路径 (同时兼容 macOS/Linux 与 Windows)
 BASE_DIR = Path(__file__).resolve().parent
-VENV_DIR = BASE_DIR / ".venv_tts"
-if VENV_DIR.exists():
-    site_packages = list(VENV_DIR.glob("lib/python*/site-packages"))
-    if site_packages and str(site_packages[0]) not in sys.path:
-        sys.path.insert(0, str(site_packages[0]))
+for vname in [".venv_tts", ".venv"]:
+    vdir = BASE_DIR / vname
+    if vdir.exists():
+        for sp in vdir.glob("lib/python*/site-packages"):
+            if str(sp) not in sys.path:
+                sys.path.insert(0, str(sp))
+        win_sp = vdir / "Lib" / "site-packages"
+        if win_sp.exists() and str(win_sp) not in sys.path:
+            sys.path.insert(0, str(win_sp))
 
 import soundfile as sf
 import torch

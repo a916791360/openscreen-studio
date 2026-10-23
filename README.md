@@ -31,7 +31,7 @@
 - 🧠 **编导端（OpenScreen Studio）**：自动读取录屏工程的**镜头特写与点击交互节拍**，根据视频物理秒数，由大模型（DeepSeek / OpenAI / 智谱等）按分镜**严卡字数预算**，自动撰写音画严密卡点的解说词。
 - 🎙️ **合成端（双轨音频架构）**：
   - **开箱即用标准音色**：内置微软 Edge-TTS 广播级自然语音（晓晓、云希、云健等），**完全免费、免 API Key、秒级生成**。
-  - **私有专属音色克隆**：支持团队每位同事 **1:1 录入并克隆自己的真实声线**（搭载 F5-TTS 零样本扩散模型 + 广播级母带人声增强链 + Faster-Whisper 毫秒级字轨对齐），一键压制 Apple 风格黑底居中字幕，导出成品 MP4！
+  - **私有专属音色克隆**：支持团队每位同事 **1:1 录入并克隆自己的真实声线**（搭载 F5-TTS 零样本扩散模型 + 广播级母带人声增强链 + 原生时间轴对齐技术，杜绝传统语音识别同音错字，字幕与文案 100% 吻合），一键压制 Apple 风格黑底居中字幕，导出成品 MP4！
 
 ---
 
@@ -45,7 +45,7 @@ flowchart TD
     B -->|方式一：开箱即用| C[微软标准音色<br>晓晓 · 云希 · 云健]
     C -->|免配置 / 0显卡门槛 / 秒级出片| E[FFmpeg 视频合成出片]
     B -->|方式二：个性化定制| D[我的专属原声<br>同事 1:1 声线克隆]
-    D -->|本地 F5-TTS + Whisper 毫秒级字轨| E
+    D -->|本地 F5-TTS + 原生时间轴字轨对齐| E
 ```
 
 ### 1. 标准音色（初次上手首选，0 配置）
@@ -90,10 +90,10 @@ flowchart TD
 ```
 
 ### 第四步：安装声音克隆扩展依赖
-专属音色克隆基于前沿的 F5-TTS 与 Faster-Whisper 模型。只需在终端运行一次安装：
+专属音色克隆搭载 F5-TTS 零样本扩散模型与独创的**【原文原生时间轴对齐 (Verbatim Native Alignment)】**引擎（100% 还原输入文案，0 错别字、毫秒级音画同步与广播级母带人声增强链）。只需在终端运行一次安装：
 ```bash
-# 激活虚拟环境后安装声音克隆依赖
-pip install f5-tts faster-whisper
+# 激活虚拟环境后安装专属声音克隆扩展
+pip install -r requirements-voice.txt
 ```
 *(如果通过 AI 助手安装，直接告诉 AI：“帮我安装专属声音克隆扩展”，AI 会自动为你装配完成)*
 
@@ -171,7 +171,8 @@ start.bat
 openscreen-studio/
 ├── studio.py                   # 工作台核心多线程服务与 Range-streaming 播放器
 ├── ai_script_generator.py      # OpenScreen 遥测节拍解析器与大模型时长约束编导引擎
-├── custom_voice_tts.py         # 专属音色克隆引擎 (F5-TTS + Faster-Whisper + 广播母带链)
+├── custom_voice_tts.py         # 专属音色克隆引擎 (F5-TTS 扩散推理 + 原生字轨对齐 + 广播母带链)
+├── requirements-voice.txt      # 专属声音克隆扩展依赖清单 (可选)
 ├── generate_tutorial_audio.py  # 独立命令行音频/字幕生成器 (基于 Edge-TTS)
 ├── custom_voice/               # 👥 团队专属音色库目录
 │   ├── README.md               # 专属音色录入详细指南

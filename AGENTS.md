@@ -14,8 +14,8 @@
    - 基于微软 Edge-TTS（内置晓晓、云希、云健等预置角色）；
    - **特点**：0 显卡要求、免 API Key、秒级生成，安装基础依赖后直接可用。
 2. **私有专属音色（1:1 声线复刻 · 按需激活）**：
-   - 基于 F5-TTS 零样本 Flow-Matching 扩散模型 + Faster-Whisper + 广播级母带处理链；
-   - **特点**：用户只需提供 10~15 秒录音，系统即可提取声线特征，生成完全由用户原声配音+精准 Apple 风格黑底字幕的教程视频。
+   - 基于 F5-TTS 零样本 Flow-Matching 扩散模型 + 原生字轨毫秒级对齐 + 广播级母带处理链；
+   - **特点**：用户只需提供 10~15 秒录音，系统即可提取声线特征，生成完全由用户原声配音+精准 Apple 风格黑底字幕的教程视频。100% 保持输入文案原文，彻底杜绝 ASR 听写错别字（如将“工单”识别为“供丹”）。
 
 ---
 
@@ -95,7 +95,7 @@ ffmpeg -y -i "用户音频路径" \
 ### 流程 4：自动安装声音克隆扩展依赖
 检查当前虚拟环境，执行：
 ```bash
-pip install f5-tts faster-whisper
+pip install -r requirements-voice.txt
 ```
 *(注意：在 macOS Apple Silicon 上，项目内建的 `custom_voice_tts.py` 已自动适配 MPS 硬件加速并绕过系统动态库冲突；在 Windows/Linux 上自动调用 CUDA 或 CPU)*
 
@@ -112,7 +112,7 @@ python3 custom_voice_tts.py --text "你好，这是我使用自己的专属音�
 ## 4. 关键文件与架构速查
 
 - `studio.py`：工作台核心服务。动态扫描 `custom_voice/voices.json`，无缝加载所有专属音色。
-- `custom_voice_tts.py`：专属音色核心合成引擎（内置广播级母带人声增强 EQ 与 Faster-Whisper 字幕对齐）。
+- `custom_voice_tts.py`：专属音色核心合成引擎（基于 F5-TTS 扩散推理与原文原生字轨毫秒级对齐，内置广播级母带人声增强 EQ）。
 - `custom_voice/`：团队音色资源池。
   - `voices.json`：音色注册表（支持多人并存）。
   - `*.wav`：各同事的参考音频切片。
@@ -127,5 +127,5 @@ python3 custom_voice_tts.py --text "你好，这是我使用自己的专属音�
    `custom_voice_tts.py` 内部已对 `torchaudio.load` 进行了 monkeypatch，使用原生 `soundfile` 读取音频，切勿重新安装旧版 torchcodec。
 2. **MPS 多批次并发退出码 139 (SIGSEGV)**：
    `f5-tts` 在 MPS 架构上不支持多线程并发，`utils_infer.py` 已调整为单线程顺序流推理，切勿将其改回 `ThreadPoolExecutor`。
-3. **字幕时间对齐微调**：
-   Faster-Whisper 转写的 SRT 已经过 ASC/SaaS 行业术语自动纠错映射（工单/核销/质保等），可在 `custom_voice_tts.py` 的映射字典中继续扩充公司特定术语。
+3. **零错别字原生字轨对齐**：
+   系统废除了 ASR 听写反推字幕，改为在逐句合成时由物理波形长度直接对齐字幕时间戳，保证 100% 呈现用户输入的原文。
