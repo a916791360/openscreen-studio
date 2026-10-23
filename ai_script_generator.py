@@ -20,27 +20,7 @@ from pathlib import Path
 # 中文自然朗读语速（字/秒，包含字间停顿，以 Edge-TTS 神经网络男/女声为实测基准）
 CHARS_PER_SECOND = 4.3
 
-def get_openscreen_recordings_dir() -> Path:
-    """跨平台动态获取 OpenScreen 录屏工程存储目录 (支持 macOS, Windows, Linux)"""
-    import sys
-    if sys.platform == 'win32':
-        app_data = os.environ.get('APPDATA')
-        if app_data:
-            p = Path(app_data) / 'openscreen/recordings'
-            if p.exists():
-                return p
-        return Path.home() / 'AppData/Roaming/openscreen/recordings'
-    elif sys.platform == 'darwin':
-        return Path.home() / 'Library/Application Support/openscreen/recordings'
-    else:
-        xdg_config = os.environ.get('XDG_CONFIG_HOME')
-        if xdg_config:
-            p = Path(xdg_config) / 'openscreen/recordings'
-            if p.exists():
-                return p
-        return Path.home() / '.config/openscreen/recordings'
-
-OPENSCREEN_RECORDINGS_DIR = get_openscreen_recordings_dir()
+OPENSCREEN_RECORDINGS_DIR = Path.home() / "Library/Application Support/openscreen/recordings"
 CONFIG_FILE = Path(__file__).resolve().parent / "llm_config.json"
 
 def normalize_api_url(url: str) -> str:
@@ -181,23 +161,24 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
 
         phase_lines = []
         for p in phases:
-            min_c = max(8, p['char_budget'] - 4)
-            max_c = p['char_budget'] + 3
+            min_c = max(10, p['char_budget'] - 4)
+            max_c = p['char_budget'] + 4
             phase_lines.append(
-                f"- 第 {p['index']} 段 [{p['start']}s ~ {p['end']}s]（{p['label']}，严格控制在【{min_c} 至 {max_c} 字】）：{p['hint']}"
+                f"- 第 {p['index']} 段 [{p['start']}s ~ {p['end']}s]（{p['label']}，建议控制在【{min_c} 至 {max_c} 字】）：{p['hint']}"
             )
         phase_guidance = "\n".join(phase_lines)
 
         full_sys_prompt = (
             f"{sys_dir}\n\n"
             f"{style_dir}\n\n"
-            f"【视频分镜节拍与时间轴红线（必须绝对遵守）】：\n"
+            f"【视频分镜节拍与时间轴基准】：\n"
             f"当前录屏物理总时长为 {round(dur, 1)} 秒，系统已基于 OpenScreen 遥测解析出 {len(phases)} 个运镜分镜阶段：\n"
             f"{phase_guidance}\n\n"
-            f"【时钟与字数硬性规则】：\n"
+            f"【语句完整性与字数红线（绝对不可违背）】：\n"
             f"1. 必须输出且仅输出 {len(phases)} 个自然段落，每个自然段严格按顺序对应上方的一个分镜阶段！\n"
-            f"2. 每个段落的字数必须严格卡在其预算范围内，绝对严禁超时或超长，确保画面运镜缩放时台词正好对应！\n"
-            f"3. 段落之间用空行隔开；直接输出纯解说词文本，严禁输出 Markdown 标题、严禁输出时间戳、严禁输出任何解释说明。"
+            f"2. 严禁断句截断：每一段必须是【语法完整、语义闭环、有头有尾】的口语句子，结尾必须是句号（。）！绝对严禁写出半截话或未讲完的断语（如绝不能只写“专属经销商就会收”、“方便”这类缺少谓语/宾语的半截断词）！\n"
+            f"3. 紧凑凝练：请紧扣建议字数表达，不要添加冗长啰嗦的虚词套话，使语速自然卡在对应镜头区间内。\n"
+            f"4. 段落之间用空行隔开；直接输出纯解说词文本，严禁输出任何 Markdown 标题、严禁输出时间戳、严禁输出解释说明。"
         )
 
         user_prompt = (
@@ -205,7 +186,7 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
             f"--------------------\n"
             f"{clean_text}\n"
             f"--------------------\n"
-            f"请严格按照上方的 {len(phases)} 个运镜分镜阶段，将上述真实操作润色为 {len(phases)} 段音画严密同步的解说词："
+            f"请严格按照上方的 {len(phases)} 个运镜分镜阶段，将上述真实操作润色为 {len(phases)} 段音画严密同步、表意完整闭环的解说词："
         )
 
         llm_res, err_msg = call_llm_api(user_prompt, full_sys_prompt, cfg)
@@ -221,10 +202,10 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
             if len(clean_paras) == len(phases):
                 final_paras = []
                 for p_text, ph in zip(clean_paras, phases):
-                    c_count = len(re.sub(r'\s+', '', p_text))
-                    max_allowed = ph['char_budget'] + 5
-                    if c_count > max_allowed:
-                        p_text = compress_text_to_target(p_text, ph['char_budget'])
+                    p_text = p_text.strip()
+                    # 确保每段结尾标点规范闭合，绝无半句或截断
+                    if not re.search(r'[。！？]$', p_text):
+                        p_text = re.sub(r'[，,；;、\s]+$', '', p_text) + '。'
                     final_paras.append(p_text)
                 cleaned_script = "\n\n".join(final_paras)
             else:
@@ -398,7 +379,7 @@ def compress_text_to_target(text: str, target_chars: int) -> str:
 
     result = [sentences[i] for i in sorted(selected_indices)]
     if not result and sentences:
-        result = [sentences[0][:target_chars]]
+        result = [sentences[0]]
     return "\n".join(result)
 
 def expand_summary_to_target(text: str, target_chars: int, dur: float) -> str:
@@ -786,10 +767,10 @@ def analyze_telemetry_phases(beats: list, total_duration: float) -> list:
             'hint': '全景视角，展示最终执行结果与状态确认'
         })
 
-    # 为每个阶段计算字数预算（自然语速 3.8 字/秒）与序号
+    # 为每个阶段计算字数预算（黄金语速 4.2 字/秒）与序号
     for idx, p in enumerate(phases):
         p['index'] = idx + 1
-        p['char_budget'] = max(10, int(p['duration'] * 3.8))
+        p['char_budget'] = max(12, int(round(p['duration'] * 4.2)))
 
     return phases
 
