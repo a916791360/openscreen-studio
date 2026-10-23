@@ -32,6 +32,15 @@ uploads/
 *.srt
 *.vtt
 
+# Allow custom voice templates & reference samples
+!custom_voice/*.wav
+!custom_voice/*.json
+
+# Model weights & Checkpoints (downloaded automatically on demand)
+*.safetensors
+*.ckpt
+*.pth
+
 # Logs & Temp
 *.log
 *.tmp

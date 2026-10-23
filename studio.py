@@ -71,19 +71,39 @@ RECORDINGS_DIR = get_openscreen_recordings_dir()
 DOWNLOADS_DIR = Path.home() / "Downloads"
 UPLOADS_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "output"
+CUSTOM_VOICE_DIR = BASE_DIR / "custom_voice"
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+CUSTOM_VOICE_DIR.mkdir(parents=True, exist_ok=True)
 
-VOICES = [
-    {"id": "xiaoxiao", "name": "晓晓", "role": "知性亲和女声", "tag": "SaaS / 功能演示", "voice_id": "zh-CN-XiaoxiaoNeural"},
-    {"id": "yunxi", "name": "云希", "role": "阳光活力男声", "tag": "技术架构 / 新特性", "voice_id": "zh-CN-YunxiNeural"},
-    {"id": "yunjian", "name": "云健", "role": "沉稳专业男声", "tag": "业务规范 / 培训", "voice_id": "zh-CN-YunjianNeural"},
-    {"id": "xiaoyi", "name": "晓伊", "role": "温柔讲解女声", "tag": "操作指引 / 客服", "voice_id": "zh-CN-XiaoyiNeural"},
-    {"id": "yunxia", "name": "云夏", "role": "清亮青年男声", "tag": "敏捷快闪 / 提纲", "voice_id": "zh-CN-YunxiaNeural"},
-    {"id": "liaoning", "name": "小北", "role": "方言老妹儿", "tag": "轻松解说", "voice_id": "zh-CN-liaoning-XiaobeiNeural"},
-    {"id": "shaanxi", "name": "小妮", "role": "陕西特色方言", "tag": "特色讲解", "voice_id": "zh-CN-shaanxi-XiaoniNeural"},
-]
+def get_all_voices():
+    voices = []
+    # 动态载入 custom_voice/voices.json
+    v_json = CUSTOM_VOICE_DIR / "voices.json"
+    if v_json.exists():
+        try:
+            with open(v_json, "r", encoding="utf-8") as f:
+                c_voices = json.load(f)
+                for cv in c_voices:
+                    cv["type"] = "custom"
+                    voices.append(cv)
+        except Exception:
+            pass
+
+    DEFAULT_VOICES = [
+        {"id": "xiaoxiao", "name": "晓晓", "role": "知性亲和女声", "tag": "SaaS / 功能演示", "voice_id": "zh-CN-XiaoxiaoNeural"},
+        {"id": "yunxi", "name": "云希", "role": "阳光活力男声", "tag": "技术架构 / 新特性", "voice_id": "zh-CN-YunxiNeural"},
+        {"id": "yunjian", "name": "云健", "role": "沉稳专业男声", "tag": "业务规范 / 培训", "voice_id": "zh-CN-YunjianNeural"},
+        {"id": "xiaoyi", "name": "晓伊", "role": "温柔讲解女声", "tag": "操作指引 / 客服", "voice_id": "zh-CN-XiaoyiNeural"},
+        {"id": "yunxia", "name": "云夏", "role": "清亮青年男声", "tag": "敏捷快闪 / 提纲", "voice_id": "zh-CN-YunxiaNeural"},
+        {"id": "liaoning", "name": "小北", "role": "方言老妹儿", "tag": "轻松解说", "voice_id": "zh-CN-liaoning-XiaobeiNeural"},
+        {"id": "shaanxi", "name": "小妮", "role": "陕西特色方言", "tag": "特色讲解", "voice_id": "zh-CN-shaanxi-XiaoniNeural"},
+    ]
+    voices.extend(DEFAULT_VOICES)
+    return voices
+
+VOICES = get_all_voices()
 
 HTML_WORKBENCH = r"""<!DOCTYPE html>
 <html lang="zh-CN" data-theme="dark">
@@ -370,7 +390,7 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
           </span>
           <span id="theme-text">浅色模式</span>
         </button>
-        <span class="mono">Engine: Edge-TTS · OpenScreen</span>
+        <span class="mono">Engine: F5-TTS (私有克隆) · Edge-TTS · OpenScreen</span>
         <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--color-success);" title="服务在线"></span>
       </div>
     </div>
@@ -694,7 +714,7 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
 
     let activeVideoPath = null;
     let activeDuration = 42.5;
-    let activeVoice = "xiaoxiao";
+    let activeVoice = "my_voice";
     let activeBeats = [];
     let voicesList = [];
 
@@ -798,13 +818,17 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
       const rack = document.getElementById('voice-rack');
       rack.innerHTML = voicesList.map(v => `
         <div class="voice-card ${v.id === activeVoice ? 'active' : ''}"
-             onclick="selectVoice('${v.id}')" data-voice="${v.id}">
+             onclick="selectVoice('${v.id}')" data-voice="${v.id}"
+             style="${v.type === 'custom' ? 'border: 1.5px solid var(--color-accent); background: rgba(59, 130, 246, 0.08);' : ''}">
           <div style="display: flex; justify-content: space-between; align-items: flex-start;">
             <div>
-              <div style="font-weight: 600; font-size: 12px; color: var(--text-primary);">${v.name}</div>
+              <div style="font-weight: 600; font-size: 12px; color: var(--text-primary); display: flex; align-items: center; gap: 4px;">
+                ${v.name}
+                ${v.type === 'custom' ? '<span class="tag mono" style="font-size: 9px; padding: 1px 4px; background: var(--color-accent); color: white; border-radius: 4px;">私有克隆</span>' : ''}
+              </div>
               <div class="mono" style="font-size: 10px; color: var(--text-muted); margin-top: 2px;">${v.role}</div>
             </div>
-            <button class="play-btn" onclick="previewVoiceAudio(event, '${v.id}')" title="试听 3 秒">
+            <button class="play-btn" onclick="previewVoiceAudio(event, '${v.id}')" title="试听声音">
               <svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>
             </button>
           </div>
@@ -1522,7 +1546,11 @@ ${p.hint}
 
       const btn = document.getElementById('render-master-btn');
       btn.disabled = true;
-      btn.innerText = '正在进行音视频精确对齐与字幕压制，请稍候...';
+      if (activeVoice === 'my_voice' || (voicesList.find(x => x.id === activeVoice) || {}).type === 'custom') {
+        btn.innerText = '🧠 专属音色本地神经推理与对齐中 (约需40~60秒)，请耐心稍候...';
+      } else {
+        btn.innerText = '正在进行音视频精确对齐与字幕压制，请稍候...';
+      }
 
       const v = parseInt(document.getElementById('rate-slider').value, 10);
       const rateStr = v >= 0 ? `+${v}%` : `${v}%`;
@@ -1640,7 +1668,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
-            self.wfile.write(json.dumps(VOICES, ensure_ascii=False).encode("utf-8"))
+            self.wfile.write(json.dumps(get_all_voices(), ensure_ascii=False).encode("utf-8"))
             return
 
         elif path == "/api/llm-config":
@@ -1652,14 +1680,31 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
 
         elif path == "/api/preview-voice":
-            voice_id = query.get("voice", ["xiaoxiao"])[0]
-            voice_entry = next((v for v in VOICES if v["id"] == voice_id), VOICES[0])
+            all_v = get_all_voices()
+            voice_id = query.get("voice", [all_v[0]["id"]])[0]
+            voice_entry = next((v for v in all_v if v["id"] == voice_id), all_v[0])
             preview_file = OUTPUT_DIR / f"preview_{voice_id}.mp3"
 
             if not preview_file.exists():
-                text = f"你好，我是{voice_entry['name']}，很高兴为您带来本期功能教程解说。"
-                cmd = get_edge_tts_cmd() + ["--voice", voice_entry["voice_id"], "--text", text, "--write-media", str(preview_file)]
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if voice_entry.get("type") == "custom":
+                    custom_runner = BASE_DIR / "custom_voice_tts.py"
+                    ref_audio = CUSTOM_VOICE_DIR / voice_entry.get("ref_audio", "ref_clip_engineer.wav")
+                    ref_text = voice_entry.get("ref_text", "工程师接单后，移动端会立即收到推送提醒，包括精准的客户地址。")
+                    venv_py = BASE_DIR / ".venv_tts/bin/python"
+                    py_bin = str(venv_py) if venv_py.exists() else sys.executable
+                    cmd = [
+                        py_bin, str(custom_runner),
+                        "--text", f"你好，我是{voice_entry['name']}，很高兴为您带来本期教程解说。",
+                        "--output-audio", str(preview_file),
+                        "--output-srt", str(preview_file.with_suffix(".srt")),
+                        "--ref-audio", str(ref_audio),
+                        "--ref-text", ref_text
+                    ]
+                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    text = f"你好，我是{voice_entry['name']}，很高兴为您带来本期功能教程解说。"
+                    cmd = get_edge_tts_cmd() + ["--voice", voice_entry["voice_id"], "--text", text, "--write-media", str(preview_file)]
+                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1964,7 +2009,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             burn_subs = data.get("burnSubtitles", True)
             hold_last_frame = data.get("holdLastFrame", True)
 
-            voice_entry = next((v for v in VOICES if v["id"] == voice_id), VOICES[0])
+            all_v = get_all_voices()
+            voice_entry = next((v for v in all_v if v["id"] == voice_id), all_v[0])
 
             ts = int(time.time())
             prefix = OUTPUT_DIR / f"tutorial_{ts}"
@@ -1976,15 +2022,39 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             margin_v = 22 if font_size <= 11.5 else 26
 
             try:
-                # 1. 跑 Edge-TTS 生成音频与干净字幕
-                tts_cmd = get_edge_tts_cmd() + [
-                    "--voice", voice_entry["voice_id"],
-                    "--text", script,
-                    "--rate", rate,
-                    "--write-media", str(audio_path),
-                    "--write-subtitles", str(srt_path)
-                ]
-                subprocess.run(tts_cmd, check=True)
+                if voice_entry.get("type") == "custom":
+                    # 专属克隆音色：调用 custom_voice_tts.py
+                    speed_factor = 1.0
+                    try:
+                        speed_pct = int(rate.replace("%", "").replace("+", ""))
+                        speed_factor = 1.0 + (speed_pct / 100.0)
+                    except Exception:
+                        pass
+                    custom_runner = BASE_DIR / "custom_voice_tts.py"
+                    ref_audio = CUSTOM_VOICE_DIR / voice_entry.get("ref_audio", "ref_clip_engineer.wav")
+                    ref_text = voice_entry.get("ref_text", "工程师接单后，移动端会立即收到推送提醒，包括精准的客户地址。")
+                    venv_py = BASE_DIR / ".venv_tts/bin/python"
+                    py_bin = str(venv_py) if venv_py.exists() else sys.executable
+                    cmd = [
+                        py_bin, str(custom_runner),
+                        "--text", script,
+                        "--output-audio", str(audio_path),
+                        "--output-srt", str(srt_path),
+                        "--speed", str(speed_factor),
+                        "--ref-audio", str(ref_audio),
+                        "--ref-text", ref_text
+                    ]
+                    subprocess.run(cmd, check=True)
+                else:
+                    # 1. 跑 Edge-TTS 生成音频与干净字幕
+                    tts_cmd = get_edge_tts_cmd() + [
+                        "--voice", voice_entry["voice_id"],
+                        "--text", script,
+                        "--rate", rate,
+                        "--write-media", str(audio_path),
+                        "--write-subtitles", str(srt_path)
+                    ]
+                    subprocess.run(tts_cmd, check=True)
 
                 # 2. 净化 SRT 格式 (确保无重号、无悬挂数字、时间戳精准)
                 if srt_path.exists():
