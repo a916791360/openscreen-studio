@@ -368,6 +368,8 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
     .play-btn:active {
       transform: scale(0.92);
     }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 0.8s linear infinite; }
     .play-glyph {
       width: 9px;
       height: 9px;
@@ -865,20 +867,67 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
       });
     }
 
+    let _activeAudio = null;
+    let _activePlayBtn = null;
+
     async function previewVoiceAudio(e, voiceId) {
       e.stopPropagation();
       const btn = e.currentTarget;
-      btn.style.opacity = '0.5';
+
+      // 如果当前正在播放同一个，再次点击则暂停
+      if (_activeAudio && _activePlayBtn === btn && !_activeAudio.paused) {
+        _activeAudio.pause();
+        btn.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
+        _activeAudio = null;
+        _activePlayBtn = null;
+        return;
+      }
+
+      // 停止之前的播放
+      if (_activeAudio) {
+        _activeAudio.pause();
+        if (_activePlayBtn) {
+          _activePlayBtn.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
+        }
+      }
+
+      btn.style.opacity = '0.6';
+      btn.innerHTML = '<svg class="icon spin" viewBox="0 0 24 24" style="width: 12px; height: 12px;"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="31.4 31.4"/></svg>';
+
       try {
         const res = await fetch('/api/preview-voice?voice=' + voiceId);
         const data = await res.json();
-        const p = document.getElementById('voice-previewer');
-        p.src = data.url;
-        p.play();
-      } catch (err) {
-        console.error(err);
-      } finally {
+        if (!data.url) throw new Error(data.error || '未获取到试听音频');
+
+        const audio = new Audio(data.url);
+        _activeAudio = audio;
+        _activePlayBtn = btn;
+
+        audio.onended = () => {
+          btn.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
+          btn.style.opacity = '1';
+          _activeAudio = null;
+          _activePlayBtn = null;
+        };
+
+        audio.onerror = (err) => {
+          console.error('试听加载失败:', err);
+          btn.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
+          btn.style.opacity = '1';
+          _activeAudio = null;
+          _activePlayBtn = null;
+        };
+
+        await audio.play();
         btn.style.opacity = '1';
+        btn.innerHTML = '<svg viewBox="0 0 16 16" style="width: 10px; height: 10px; fill: currentColor;"><rect x="3" y="2" width="3.5" height="12"/><rect x="9.5" y="2" width="3.5" height="12"/></svg>';
+      } catch (err) {
+        console.error('试听异常:', err);
+        btn.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
+        btn.style.opacity = '1';
+        _activeAudio = null;
+        _activePlayBtn = null;
+        alert('试听加载失败: ' + err.message);
       }
     }
 

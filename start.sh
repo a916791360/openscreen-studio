@@ -12,6 +12,20 @@ echo "======================================================="
 echo "🎬 OpenScreen Studio · 软件教程自动化视频工作台"
 echo "======================================================="
 
+# 0. 优先检测是否已有工作台正在运行（避免重复启动，秒级唤醒）
+for P in {8765..8774}; do
+    if curl -s --max-time 0.5 "http://127.0.0.1:$P/api/voices" 2>/dev/null | grep -q "zh-CN-XiaoxiaoNeural"; then
+        echo "✅ 工作台已在后台运行中 (http://localhost:$P)！"
+        echo "🌐 正在直接为您激活浏览器窗口..."
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            open "http://localhost:$P"
+        elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            xdg-open "http://localhost:$P" 2>/dev/null || true
+        fi
+        exit 0
+    fi
+done
+
 # 1. 检查 Python 3 环境
 if ! command -v python3 &> /dev/null; then
     echo "❌ [错误] 未检测到 python3，请先安装 Python 3.9 或更高版本。"

@@ -11,8 +11,8 @@ __pycache__/
 .Python
 env/
 venv/
-.venv/
-.venv*/
+.venv
+.venv*
 
 # User Local LLM Config & Keys (Never commit!)
 llm_config.json
