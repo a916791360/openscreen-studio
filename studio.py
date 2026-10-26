@@ -84,6 +84,17 @@ def get_custom_tts_python() -> str:
             return str(c)
     return sys.executable
 
+def check_custom_tts_available() -> tuple:
+    """自检本地专属音色推理环境 (PyTorch + F5-TTS)"""
+    py_bin = get_custom_tts_python()
+    try:
+        res = subprocess.run([py_bin, "-c", "import torch, f5_tts"], capture_output=True, timeout=5)
+        if res.returncode != 0:
+            return False, "未检测到专属音色深度学习环境 (缺少 PyTorch 或 F5-TTS)。请先运行 'pip install -r requirements-voice.txt'，或直接使用开箱即用的标准音色（如晓晓、云希）。"
+        return True, ""
+    except Exception as e:
+        return False, f"专属音色环境检查异常: {str(e)}"
+
 RECORDINGS_DIR = get_openscreen_recordings_dir()
 DOWNLOADS_DIR = Path.home() / "Downloads"
 UPLOADS_DIR = BASE_DIR / "uploads"
@@ -733,7 +744,7 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
 
     let activeVideoPath = null;
     let activeDuration = 42.5;
-    let activeVoice = "my_voice";
+    let activeVoice = "xiaoxiao";
     let activeBeats = [];
     let voicesList = [];
 
@@ -1753,9 +1764,16 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 
             if not preview_file.exists():
                 if voice_entry.get("type") == "custom":
+                    ok, err_msg = check_custom_tts_available()
+                    if not ok:
+                        self.send_response(500)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"error": err_msg}).encode("utf-8"))
+                        return
                     custom_runner = BASE_DIR / "custom_voice_tts.py"
-                    ref_audio = CUSTOM_VOICE_DIR / voice_entry.get("ref_audio", "ref_clip_engineer.wav")
-                    ref_text = voice_entry.get("ref_text", "工程师接单后，移动端会立即收到推送提醒，包括精准的客户地址。")
+                    ref_audio = CUSTOM_VOICE_DIR / voice_entry.get("ref_audio", "my_recording.wav")
+                    ref_text = voice_entry.get("ref_text", "")
                     py_bin = get_custom_tts_python()
                     cmd = [
                         py_bin, str(custom_runner),
@@ -1770,6 +1788,13 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     text = f"你好，我是{voice_entry['name']}，很高兴为您带来本期功能教程解说。"
                     cmd = get_edge_tts_cmd() + ["--voice", voice_entry["voice_id"], "--text", text, "--write-media", str(preview_file)]
                     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            if not preview_file.exists():
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "生成试听音频失败，请检查网络连接或运行依赖"}).encode("utf-8"))
+                return
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2096,6 +2121,10 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     )
 
                 if voice_entry.get("type") == "custom":
+                    ok, err_msg = check_custom_tts_available()
+                    if not ok:
+                        raise RuntimeError(err_msg)
+
                     # 专属克隆音色：调用 custom_voice_tts.py
                     speed_factor = 1.0
                     try:
@@ -2104,8 +2133,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     except Exception:
                         pass
                     custom_runner = BASE_DIR / "custom_voice_tts.py"
-                    ref_audio = CUSTOM_VOICE_DIR / voice_entry.get("ref_audio", "ref_clip_engineer.wav")
-                    ref_text = voice_entry.get("ref_text", "工程师接单后，移动端会立即收到推送提醒，包括精准的客户地址。")
+                    ref_audio = CUSTOM_VOICE_DIR / voice_entry.get("ref_audio", "my_recording.wav")
+                    ref_text = voice_entry.get("ref_text", "")
                     py_bin = get_custom_tts_python()
                     cmd = [
                         py_bin, str(custom_runner),

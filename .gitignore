@@ -21,6 +21,12 @@ llm_config.json
 .env
 .env.*
 
+# User Local Custom Voice Config & Audio
+custom_voice/voices.json
+custom_voice/*.wav
+custom_voice/*.m4a
+custom_voice/*.mp3
+
 # Media Assets & Generated Artifacts
 output/
 uploads/
@@ -32,9 +38,10 @@ uploads/
 *.srt
 *.vtt
 
-# Allow custom voice templates & reference samples
-!custom_voice/*.wav
-!custom_voice/*.json
+# Allow custom voice templates & documentation
+!custom_voice/voices.example.json
+!custom_voice/README.md
+!custom_voice/.gitkeep
 
 # Model weights & Checkpoints (downloaded automatically on demand)
 *.safetensors
