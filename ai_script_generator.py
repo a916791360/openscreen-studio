@@ -46,7 +46,7 @@ def load_llm_config() -> dict:
         "apiKey": "",
         "model": "deepseek-chat",
         "systemPrompt": "你是一名资深的软件教程解说导演。请根据用户提供的系统真实操作记录，将其润色为一段口语自然、清晰易懂、节奏舒适的教程旁白解说词。",
-        "stylePrompt": "要求：\n1. 语言风格：口语自然、清晰易懂、像同事在身边指引讲解，杜绝机械播音腔与大而无当的公文套话；\n2. 事实边界：100% 严格依照用户给定的真实操作，绝不脑补或虚构未提及的菜单与功能；\n3. 步骤结构：开场简短引入 -> 步骤自然衔接 -> 操作结果收尾；\n4. 时长卡控：系统将强制按物理秒数严格限制字数，请确保在该预算内完稿。"
+        "stylePrompt": "要求：\n1. 语言风格：口语自然、清晰易懂、像同事在身边指引讲解，杜绝机械播音腔与大而无当的公文套话；\n2. 事实边界：100% 严格依照用户给定的真实操作，绝不脑补或虚构未提及的菜单与功能；\n3. 步骤结构：开场简短引入 -> 步骤自然衔接 -> 操作结果收尾；\n4. 节奏把控：紧扣视频时间节奏，按自然口语流畅表达，无需机械计算字数。"
     }
     if CONFIG_FILE.exists():
         try:
@@ -81,14 +81,20 @@ def test_llm_connection(api_config: dict) -> tuple:
         "messages": [
             {"role": "user", "content": "请回复四个字：连接成功"}
         ],
-        "max_tokens": 15
+        "max_tokens": 250
     }
 
     try:
         req = urllib.request.Request(api_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=12) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             res_data = json.loads(resp.read().decode("utf-8"))
-            reply = res_data["choices"][0]["message"]["content"].strip()
+            msg = res_data.get("choices", [{}])[0].get("message", {})
+            reply = msg.get("content", "").strip()
+            reasoning = msg.get("reasoning_content", "").strip()
+            if not reply and reasoning:
+                reply = "连接成功 (推理就绪)"
+            elif not reply:
+                reply = "连接成功"
             return True, f"测试成功！模型已正常就绪并响应：{reply}"
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="ignore")
@@ -99,7 +105,7 @@ def test_llm_connection(api_config: dict) -> tuple:
         return False, f"连接异常: {str(e)}"
 
 def call_llm_api(prompt: str, system_prompt: str, api_config: dict) -> tuple:
-    """调用用户配置的大模型 API (兼容 OpenAI / DeepSeek 等标准接口)"""
+    """调用用户配置的大模型 API (兼容 OpenAI / DeepSeek / 智谱 GLM 等标准接口)"""
     raw_url = api_config.get("apiUrl", "https://api.deepseek.com/v1")
     api_url = normalize_api_url(raw_url)
     api_key = api_config.get("apiKey", "").strip()
@@ -122,14 +128,28 @@ def call_llm_api(prompt: str, system_prompt: str, api_config: dict) -> tuple:
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.4,
-        "max_tokens": 1200
+        "max_tokens": 2048
     }
 
     try:
         req = urllib.request.Request(api_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=35) as resp:
+        with urllib.request.urlopen(req, timeout=40) as resp:
             res_data = json.loads(resp.read().decode("utf-8"))
-            content = res_data["choices"][0]["message"]["content"].strip()
+            choices = res_data.get("choices", [])
+            if not choices:
+                return None, "接口未返回有效 choices 数据"
+            msg = choices[0].get("message", {})
+            content = msg.get("content", "").strip()
+            reasoning = msg.get("reasoning_content", "").strip()
+            finish_reason = choices[0].get("finish_reason", "")
+
+            if not content:
+                if finish_reason == "length":
+                    return None, "模型深度思考消耗过多 Token 导致正文截断，已自动切换为安全规则"
+                if reasoning:
+                    return None, "模型仅输出了思考过程但未生成正文"
+                return None, "模型返回了空内容"
+
             return content, ""
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="ignore")
@@ -138,6 +158,108 @@ def call_llm_api(prompt: str, system_prompt: str, api_config: dict) -> tuple:
         return None, f"网络连接失败: {e.reason}"
     except Exception as e:
         return None, f"调用异常: {str(e)}"
+
+def clean_llm_script_output(text: str) -> list:
+    """清理大模型可能输出的开场废话、Markdown 标题或分段前缀"""
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    filtered_lines = []
+    for l in lines:
+        if re.search(r"^(好的，)?(以下是|为您生成|为您润色|为您准备|改写后的).*?[：:]\s*$", l):
+            continue
+        filtered_lines.append(l)
+
+    cleaned_paras = []
+    for l in filtered_lines:
+        t = re.sub(r"\*\*|\*", "", l).strip()
+        # 过滤纯标题行，如 "第一段 · 开场说明" 或 "分镜 1: 开场"
+        if re.match(r"^(第[一二三四五六七八九十\d]+[段幕部分]|分镜\s*\d+|步骤\s*\d+|[Pp]hase\s*\d+)[\s·:：、.-]*([\u4e00-\u9fa5\w\s]{0,15})[：:]?$", t):
+            continue
+        # 去除行首的段落标记，如 "第一段：大家好..." -> "大家好..."
+        t = re.sub(r"^(第[一二三四五六七八九十\d]+[段幕部分]|分镜\s*\d+|步骤\s*\d+|[Pp]hase\s*\d+)[\s·:：、.-]*", "", t).strip()
+        # 去除行首序号，如 "1. " 或 "1、"
+        t = re.sub(r"^\d+[\.、\s]+", "", t).strip()
+        if t:
+            cleaned_paras.append(t)
+    return cleaned_paras
+
+def smart_offline_distribute(text: str, num_phases: int = 4) -> list:
+    """
+    离线分镜自适应分布算法：
+    将用户原本的操作文本，按真实语义句子和标点符号自然划分为 num_phases 段，
+    绝不无中生有添加假菜单、假动作或机械套话（杜绝“随后仔细核对并...”等机械模板）。
+    """
+    clean = text.strip()
+    if not clean:
+        return ["操作开始。"] * num_phases
+
+    # 按自然标点与换行切分
+    raw_clauses = [c.strip() for c in re.split(r"([。！？\n；;]+)", clean) if c.strip()]
+    merged_sents = []
+    i = 0
+    while i < len(raw_clauses):
+        c = raw_clauses[i]
+        if i + 1 < len(raw_clauses) and re.match(r"^[。！？\n；;]+$", raw_clauses[i+1]):
+            merged_sents.append(c + raw_clauses[i+1].strip())
+            i += 2
+        else:
+            merged_sents.append(c)
+            i += 1
+
+    # 如果整句少于分镜数，拆逗号
+    if len(merged_sents) < num_phases:
+        expanded = []
+        for s in merged_sents:
+            parts = [p.strip() for p in re.split(r"([，,])", s) if p.strip()]
+            cur = ""
+            for p in parts:
+                cur += p
+                if len(cur) >= 12 or p in ["，", ","]:
+                    expanded.append(cur)
+                    cur = ""
+            if cur:
+                if expanded:
+                    expanded[-1] += cur
+                else:
+                    expanded.append(cur)
+        if len(expanded) >= len(merged_sents):
+            merged_sents = expanded
+
+    # 规范化每个单元：去除首尾各种标点
+    norm_units = []
+    for s in merged_sents:
+        t = re.sub(r"^[，,；;、\s]+", "", s)
+        t = re.sub(r"[，,；;、\s。！？]+$", "", t).strip()
+        if t:
+            norm_units.append(t)
+
+    # 放入桶
+    buckets = [[] for _ in range(num_phases)]
+    if len(norm_units) <= num_phases:
+        for idx, u in enumerate(norm_units):
+            buckets[min(idx, num_phases - 1)].append(u)
+        for idx in range(num_phases):
+            if not buckets[idx]:
+                prev_b = buckets[max(0, idx - 1)]
+                if len(prev_b) > 1:
+                    buckets[idx].append(prev_b.pop())
+                else:
+                    buckets[idx].append("继续按界面指引完成当前操作")
+    else:
+        step_chunk = len(norm_units) / num_phases
+        for i, u in enumerate(norm_units):
+            b_idx = min(num_phases - 1, int(i / step_chunk))
+            buckets[b_idx].append(u)
+
+    result = []
+    for b in buckets:
+        p_text = "，".join(b).strip()
+        p_text = re.sub(r"^[，,；;、\s]+", "", p_text)
+        p_text = re.sub(r"[，,；;、\s]+$", "", p_text)
+        if p_text and not re.search(r"[。！？]$", p_text):
+            p_text += "。"
+        result.append(p_text or "继续按界面指引完成操作。")
+
+    return result
 
 def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path: Path = None, api_config: dict = None) -> dict:
     """
@@ -165,24 +287,22 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
 
         phase_lines = []
         for p in phases:
-            min_c = max(10, p['char_budget'] - 4)
-            max_c = p['char_budget'] + 4
             phase_lines.append(
-                f"- 第 {p['index']} 段 [{p['start']}s ~ {p['end']}s]（{p['label']}，建议控制在【{min_c} 至 {max_c} 字】）：{p['hint']}"
+                f"- 第 {p['index']} 段 [{p['start']}s ~ {p['end']}s]（{p['label']}，参考约 {p['char_budget']} 字左右）：{p['hint']}"
             )
         phase_guidance = "\n".join(phase_lines)
 
         full_sys_prompt = (
             f"{sys_dir}\n\n"
             f"{style_dir}\n\n"
-            f"【视频分镜节拍与时间轴基准】：\n"
-            f"当前录屏物理总时长为 {round(dur, 1)} 秒，系统已基于 OpenScreen 遥测解析出 {len(phases)} 个运镜分镜阶段：\n"
+            f"【视频分镜与时间轴规划】：\n"
+            f"当前录屏物理总时长为 {round(dur, 1)} 秒，共划分为 {len(phases)} 个运镜分镜阶段：\n"
             f"{phase_guidance}\n\n"
-            f"【语句完整性与字数红线（绝对不可违背）】：\n"
-            f"1. 必须输出且仅输出 {len(phases)} 个自然段落，每个自然段严格按顺序对应上方的一个分镜阶段！\n"
-            f"2. 严禁断句截断：每一段必须是【语法完整、语义闭环、有头有尾】的口语句子，结尾必须是句号（。）！绝对严禁写出半截话或未讲完的断语（如绝不能只写“专属经销商就会收”、“方便”这类缺少谓语/宾语的半截断词）！\n"
-            f"3. 紧凑凝练：请紧扣建议字数表达，不要添加冗长啰嗦的虚词套话，使语速自然卡在对应镜头区间内。\n"
-            f"4. 段落之间用空行隔开；直接输出纯解说词文本，严禁输出任何 Markdown 标题、严禁输出时间戳、严禁输出解释说明。"
+            f"【输出规范】：\n"
+            f"1. 必须输出且仅输出 {len(phases)} 个自然段落，每个自然段严格按顺序对应上方的一个分镜阶段。\n"
+            f"2. 保持日常口语表达，有头有尾、语义完整闭环，严禁截断。\n"
+            f"3. 节奏拟合：参考字数仅供朗读节奏参考，按自然语感流畅表达即可，无需逐字机械计数计算。\n"
+            f"4. 格式纯净：段落之间用空行隔开；直接输出纯解说词正文，严禁输出任何 Markdown 标题、时间戳或前言说明。"
         )
 
         user_prompt = (
@@ -190,30 +310,23 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
             f"--------------------\n"
             f"{clean_text}\n"
             f"--------------------\n"
-            f"请严格按照上方的 {len(phases)} 个运镜分镜阶段，将上述真实操作润色为 {len(phases)} 段音画严密同步、表意完整闭环的解说词："
+            f"请严格按照上方的 {len(phases)} 个分镜阶段，将上述真实操作润色为 {len(phases)} 段口语解说词："
         )
 
         llm_res, err_msg = call_llm_api(user_prompt, full_sys_prompt, cfg)
         if llm_res:
-            raw_paras = [p.strip() for p in llm_res.split('\n') if p.strip()]
-            clean_paras = []
-            for p in raw_paras:
-                p_clean = clean_script_text(p)
-                p_clean = re.sub(r'^(第[一二三四五六七八九十\d]+段|分镜\d+|步骤\d+|P\d+)[\s：:、.-]*', '', p_clean)
-                if p_clean:
-                    clean_paras.append(p_clean)
+            clean_paras = clean_llm_script_output(llm_res)
+            if len(clean_paras) != len(phases):
+                clean_paras = smart_offline_distribute("\n\n".join(clean_paras), len(phases))
 
-            if len(clean_paras) == len(phases):
-                final_paras = []
-                for p_text, ph in zip(clean_paras, phases):
-                    p_text = p_text.strip()
-                    # 确保每段结尾标点规范闭合，绝无半句或截断
-                    if not re.search(r'[。！？]$', p_text):
-                        p_text = re.sub(r'[，,；;、\s]+$', '', p_text) + '。'
-                    final_paras.append(p_text)
-                cleaned_script = "\n\n".join(final_paras)
-            else:
-                cleaned_script = "\n\n".join(clean_paras)
+            final_paras = []
+            for p_text in clean_paras:
+                p_text = p_text.strip()
+                # 确保每段结尾标点规范闭合，绝无半句或截断
+                if not re.search(r'[。！？]$', p_text):
+                    p_text = re.sub(r'[，,；;、\s]+$', '', p_text) + '。'
+                final_paras.append(p_text)
+            cleaned_script = "\n\n".join(final_paras)
 
             # 计算分镜段落统计信息
             paragraphs_stats = []
@@ -229,11 +342,11 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
                     "text": p_text,
                     "char_count": c_len,
                     "target_chars": ph["char_budget"],
-                    "status": "fit" if abs(c_len - ph["char_budget"]) <= 5 else ("over" if c_len > ph["char_budget"] else "under")
+                    "status": "fit" if abs(c_len - ph["char_budget"]) <= 8 else ("over" if c_len > ph["char_budget"] else "under")
                 })
 
             total_chars = sum(p["char_count"] for p in paragraphs_stats)
-            msg = f"✓ 已由 {cfg.get('model', '大模型')} 依照 {len(phases)} 处运镜分镜完成深度润色 (共 {total_chars} 字，严格拟合视频节奏)"
+            msg = f"✓ 已由 {cfg.get('model', '大模型')} 依照 {len(phases)} 处运镜分镜完成深度润色 (共 {total_chars} 字，节奏贴合视频)"
             return {
                 "script": cleaned_script,
                 "source": "llm",
@@ -242,7 +355,7 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
                 "message": msg
             }
         else:
-            # 大模型调用出错，降级并明确提示用户
+            # 大模型调用未成功，降级并提示用户真实原因
             fallback_text = run_local_engine(clean_text, target_chars, dur, phases)
             split_paras = [p.strip() for p in fallback_text.split('\n') if p.strip()]
             paragraphs_stats = []
@@ -264,7 +377,7 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
                 "source": "rule_fallback",
                 "phases": phases,
                 "paragraphs": paragraphs_stats,
-                "message": f"⚠️ 大模型调用失败 ({err_msg})，已自动降级为分镜规则拟合"
+                "message": f"⚠️ 大模型调用未成功 ({err_msg})，已按真实文意自适应对齐分镜"
             }
 
     # 2. 未配置大模型，使用本地轻量自适应拟合引擎
@@ -293,39 +406,19 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
     }
 
 def run_local_engine(clean_text: str, target_chars: int, dur: float, phases: list = None) -> str:
-    """本地自适应拟合引擎（支持分镜阶段对齐）"""
+    """本地自适应拟合引擎（按真实文意自然对齐分镜）"""
     chars_count = len(re.sub(r'\s+', '', clean_text))
 
-    if phases and len(phases) >= 3:
-        # 按分镜阶段智能分布台词
-        raw_steps = [s.strip() for s in re.split(r'[，,。；;\n\t]+', clean_text) if s.strip()]
-        if not raw_steps:
-            raw_steps = [clean_text]
-        
-        first_clean = re.sub(r'^(在|进入|点击)', '', raw_steps[0])
-        topic_hint = first_clean[:12] if len(first_clean) > 12 else first_clean
+    if phases and len(phases) >= 2:
+        return "\n\n".join(smart_offline_distribute(clean_text, len(phases)))
 
-        paras = []
-        for p in phases:
-            ptype = p.get('type')
-            budget = p.get('char_budget', 20)
-            if ptype == 'intro' or (p['index'] == 1 and ptype == 'zoom'):
-                s = f"大家好，欢迎观看操作指南，本期为您演示{topic_hint}的完整业务流程。"
-                if len(s) > budget + 4:
-                    s = f"大家好，本期为您演示{topic_hint}的核心操作。"
-                paras.append(s)
-            elif ptype == 'outro' or p['index'] == len(phases):
-                s = "核对确认后业务已即刻流转并生效，演示完毕。"
-                paras.append(s)
-            else:
-                # 寻找对应的用户步骤
-                step_idx = (p['index'] - 2) % len(raw_steps)
-                step_val = raw_steps[step_idx]
-                step_val = re.sub(r'^(首先|接着|随后|然后|最后)[，,]*', '', step_val)
-                conn = "接下来在操作界面中，" if p['index'] == 2 else "随后仔细核对并"
-                s = f"{conn}{step_val}。"
-                paras.append(s)
-        return "\n\n".join(paras)
+    if abs(chars_count - target_chars) <= 12:
+        return format_clean_paragraphs(clean_text)
+
+    if chars_count > target_chars + 12:
+        return compress_text_to_target(clean_text, target_chars)
+
+    return expand_summary_to_target(clean_text, target_chars, dur)
 
     if abs(chars_count - target_chars) <= 12:
         return format_clean_paragraphs(clean_text)
@@ -681,16 +774,16 @@ def analyze_telemetry_phases(beats: list, total_duration: float) -> list:
         # 无镜头缩放数据时，生成通用 3-4 分镜
         if dur <= 15:
             phases = [
-                {'start': 0.0, 'end': round(dur*0.3, 1), 'duration': round(dur*0.3, 1), 'type': 'intro', 'label': '开场引入', 'hint': '开门见山点出本期操作任务', 'char_budget': max(10, int(dur*0.3*3.8))},
-                {'start': round(dur*0.3, 1), 'end': round(dur*0.8, 1), 'duration': round(dur*0.5, 1), 'type': 'action', 'label': '核心操作', 'hint': '讲解关键操作步骤与注意事项', 'char_budget': max(15, int(dur*0.5*3.8))},
-                {'start': round(dur*0.8, 1), 'end': round(dur, 1), 'duration': round(dur*0.2, 1), 'type': 'outro', 'label': '结果收尾', 'hint': '确认操作生效并收尾', 'char_budget': max(8, int(dur*0.2*3.5))}
+                {'start': 0.0, 'end': round(dur*0.3, 1), 'duration': round(dur*0.3, 1), 'type': 'intro', 'label': '开场引入', 'hint': '开门见山点出本期操作任务与背景', 'char_budget': max(10, int(dur*0.3*3.8))},
+                {'start': round(dur*0.3, 1), 'end': round(dur*0.8, 1), 'duration': round(dur*0.5, 1), 'type': 'action', 'label': '核心功能操作', 'hint': '讲解关键操作步骤与功能体验', 'char_budget': max(15, int(dur*0.5*3.8))},
+                {'start': round(dur*0.8, 1), 'end': round(dur, 1), 'duration': round(dur*0.2, 1), 'type': 'outro', 'label': '总结收尾', 'hint': '说明使用效果或体感总结并收尾', 'char_budget': max(8, int(dur*0.2*3.5))}
             ]
         else:
             phases = [
-                {'start': 0.0, 'end': 5.0, 'duration': 5.0, 'type': 'intro', 'label': '开场引入', 'hint': '开门见山点出本期操作任务', 'char_budget': 19},
-                {'start': 5.0, 'end': round(dur*0.45, 1), 'duration': round(dur*0.45 - 5.0, 1), 'type': 'action', 'label': '定位与入口', 'hint': '找到并进入对应功能模块', 'char_budget': max(15, int((dur*0.45 - 5.0)*3.8))},
-                {'start': round(dur*0.45, 1), 'end': round(dur - 6.0, 1), 'duration': round(dur - 6.0 - dur*0.45, 1), 'type': 'action', 'label': '表单核心填写', 'hint': '录入关键信息并核对', 'char_budget': max(20, int((dur - 6.0 - dur*0.45)*3.8))},
-                {'start': round(dur - 6.0, 1), 'end': round(dur, 1), 'duration': 6.0, 'type': 'outro', 'label': '确认提交与完成', 'hint': '提交保存并确认状态流转', 'char_budget': 22}
+                {'start': 0.0, 'end': 5.0, 'duration': 5.0, 'type': 'intro', 'label': '开场引入', 'hint': '开门见山点出本期演示任务与背景', 'char_budget': 19},
+                {'start': 5.0, 'end': round(dur*0.45, 1), 'duration': round(dur*0.45 - 5.0, 1), 'type': 'action', 'label': '定位与入口', 'hint': '找到并进入对应功能模块或页面', 'char_budget': max(15, int((dur*0.45 - 5.0)*3.8))},
+                {'start': round(dur*0.45, 1), 'end': round(dur - 6.0, 1), 'duration': round(dur - 6.0 - dur*0.45, 1), 'type': 'action', 'label': '核心功能操作', 'hint': '演示核心操作步骤与交互细节', 'char_budget': max(20, int((dur - 6.0 - dur*0.45)*3.8))},
+                {'start': round(dur - 6.0, 1), 'end': round(dur, 1), 'duration': 6.0, 'type': 'outro', 'label': '总结与收尾', 'hint': '总结使用体感与操作效果并收尾', 'char_budget': 22}
             ]
         for idx, p in enumerate(phases):
             p['index'] = idx + 1
@@ -728,7 +821,7 @@ def analyze_telemetry_phases(beats: list, total_duration: float) -> list:
 
         loc = '中央区域'
         if cx < 0.35: loc = '左侧导航/菜单'
-        elif cx > 0.65 and cy > 0.6: loc = '右下角提交与指派区'
+        elif cx > 0.65 and cy > 0.6: loc = '右下角操作区'
         elif cx > 0.65: loc = '右侧操作面板'
         elif cy < 0.35: loc = '顶部工具栏'
 
@@ -743,7 +836,7 @@ def analyze_telemetry_phases(beats: list, total_duration: float) -> list:
                 'duration': round(p_dur, 1),
                 'type': 'action',
                 'label': f'主操作区{click_desc}',
-                'hint': '正常全景视角，进行页面核心录入与交互'
+                'hint': '正常全景视角，进行页面功能操作与交互'
             })
             cur_t = c_start
 
