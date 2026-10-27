@@ -845,11 +845,19 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
     async function loadVoices() {
       const res = await fetch('/api/voices');
       voicesList = await res.json();
+
+      // 读取本地持久化的音色偏好，若无则优先选中第一个有效音色
+      const savedVoice = localStorage.getItem('openscreen_active_voice');
+      if (savedVoice && voicesList.some(v => v.id === savedVoice)) {
+        activeVoice = savedVoice;
+      } else if (!activeVoice || !voicesList.some(v => v.id === activeVoice)) {
+        activeVoice = voicesList[0] ? voicesList[0].id : "xiaoxiao";
+      }
+
       const rack = document.getElementById('voice-rack');
       rack.innerHTML = voicesList.map(v => `
         <div class="voice-card ${v.id === activeVoice ? 'active' : ''}"
-             onclick="selectVoice('${v.id}')" data-voice="${v.id}"
-             style="${v.type === 'custom' ? 'border: 1.5px solid var(--color-accent); background: rgba(59, 130, 246, 0.08);' : ''}">
+             onclick="selectVoice('${v.id}')" data-voice="${v.id}">
           <div style="display: flex; justify-content: space-between; align-items: flex-start;">
             <div>
               <div style="font-weight: 600; font-size: 12px; color: var(--text-primary); display: flex; align-items: center; gap: 4px;">
@@ -869,6 +877,7 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
 
     function selectVoice(id) {
       activeVoice = id;
+      try { localStorage.setItem('openscreen_active_voice', id); } catch(e){}
       document.querySelectorAll('#voice-rack .voice-card').forEach(el => {
         if (el.dataset.voice === id) {
           el.classList.add('active');
