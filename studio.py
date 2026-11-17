@@ -16,6 +16,7 @@ Anti-AI-slop design: 零塑料渐变 · 严格时间轴字数拟合 · 精密工
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,7 @@ from ai_script_generator import (
     generate_script,
     compress_script_to_duration,
     compress_text_to_target,
+    safe_duration,
     CHARS_PER_SECOND
 )
 
@@ -758,7 +760,8 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
     }
 
     function initTheme() {
-      const saved = localStorage.getItem('studio_theme') || 'dark';
+      let saved = 'dark';
+      try { saved = localStorage.getItem('studio_theme') || 'dark'; } catch (e) {}
       document.documentElement.setAttribute('data-theme', saved);
       updateThemeBtn(saved);
     }
@@ -773,7 +776,7 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
       document.head.appendChild(style);
 
       document.documentElement.setAttribute('data-theme', next);
-      localStorage.setItem('studio_theme', next);
+      try { localStorage.setItem('studio_theme', next); } catch (e) {}
       updateThemeBtn(next);
 
       const _reflow = document.body.offsetHeight;
@@ -842,12 +845,21 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
       }
     }
 
+    function escapeHtml(str) {
+      return String(str || '').replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
+    }
+
     async function loadVoices() {
-      const res = await fetch('/api/voices');
-      voicesList = await res.json();
+      try {
+        const res = await fetch('/api/voices');
+        voicesList = await res.json();
+      } catch (e) {
+        voicesList = [];
+      }
 
       // 读取本地持久化的音色偏好，若无则优先选中第一个有效音色
-      const savedVoice = localStorage.getItem('openscreen_active_voice');
+      let savedVoice = null;
+      try { savedVoice = localStorage.getItem('openscreen_active_voice'); } catch (e) {}
       if (savedVoice && voicesList.some(v => v.id === savedVoice)) {
         activeVoice = savedVoice;
       } else if (!activeVoice || !voicesList.some(v => v.id === activeVoice)) {
@@ -855,24 +867,28 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
       }
 
       const rack = document.getElementById('voice-rack');
-      rack.innerHTML = voicesList.map(v => `
+      if (!rack) return;
+      rack.innerHTML = voicesList.map(v => {
+        const safeId = escapeHtml(v.id);
+        return `
         <div class="voice-card ${v.id === activeVoice ? 'active' : ''}"
-             onclick="selectVoice('${v.id}')" data-voice="${v.id}">
+             onclick="selectVoice('${safeId}')" data-voice="${safeId}">
           <div style="display: flex; justify-content: space-between; align-items: flex-start;">
             <div>
               <div style="font-weight: 600; font-size: 12px; color: var(--text-primary); display: flex; align-items: center; gap: 4px;">
-                ${v.name}
+                ${escapeHtml(v.name)}
                 ${v.type === 'custom' ? '<span class="tag mono" style="font-size: 9px; padding: 1px 4px; background: var(--color-accent); color: white; border-radius: 4px;">私有克隆</span>' : ''}
               </div>
-              <div class="mono" style="font-size: 10px; color: var(--text-muted); margin-top: 2px;">${v.role}</div>
+              <div class="mono" style="font-size: 10px; color: var(--text-muted); margin-top: 2px;">${escapeHtml(v.role)}</div>
             </div>
-            <button class="play-btn" onclick="previewVoiceAudio(event, '${v.id}')" title="试听声音">
+            <button class="play-btn" onclick="previewVoiceAudio(event, '${safeId}')" title="试听声音">
               <svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>
             </button>
           </div>
-          <div style="margin-top: 4px; font-size: 10px; color: var(--text-secondary);">${v.tag}</div>
+          <div style="margin-top: 4px; font-size: 10px; color: var(--text-secondary);">${escapeHtml(v.tag)}</div>
         </div>
-      `).join('');
+      `;
+      }).join('');
     }
 
     function selectVoice(id) {
@@ -889,62 +905,78 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
 
     let _activeAudio = null;
     let _activePlayBtn = null;
+    let _previewReqId = 0;
+
+    function _resetPlayBtn(b) {
+      if (!b) return;
+      b.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
+      b.style.opacity = '1';
+    }
 
     async function previewVoiceAudio(e, voiceId) {
       e.stopPropagation();
       const btn = e.currentTarget;
 
-      // 如果当前正在播放同一个，再次点击则暂停
-      if (_activeAudio && _activePlayBtn === btn && !_activeAudio.paused) {
+      // 如果当前正在播放同一个，再次点击则暂停并取消挂起请求
+      if (_activePlayBtn === btn && _activeAudio && !_activeAudio.paused) {
+        _previewReqId++;
         _activeAudio.pause();
-        btn.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
+        _resetPlayBtn(btn);
         _activeAudio = null;
         _activePlayBtn = null;
         return;
       }
 
-      // 停止之前的播放
+      // 停止之前的播放或挂起中的请求，并立即恢复旧按钮状态
+      const reqId = ++_previewReqId;
       if (_activeAudio) {
         _activeAudio.pause();
-        if (_activePlayBtn) {
-          _activePlayBtn.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
-        }
+        _activeAudio = null;
+      }
+      if (_activePlayBtn && _activePlayBtn !== btn) {
+        _resetPlayBtn(_activePlayBtn);
       }
 
+      _activePlayBtn = btn;
       btn.style.opacity = '0.6';
       btn.innerHTML = '<svg class="icon spin" viewBox="0 0 24 24" style="width: 12px; height: 12px;"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="31.4 31.4"/></svg>';
 
       try {
-        const res = await fetch('/api/preview-voice?voice=' + voiceId);
+        const res = await fetch('/api/preview-voice?voice=' + encodeURIComponent(voiceId));
+        if (reqId !== _previewReqId) return;
         const data = await res.json();
+        if (reqId !== _previewReqId) return;
         if (!data.url) throw new Error(data.error || '未获取到试听音频');
 
         const audio = new Audio(data.url);
         _activeAudio = audio;
-        _activePlayBtn = btn;
 
         audio.onended = () => {
-          btn.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
-          btn.style.opacity = '1';
+          if (reqId !== _previewReqId) return;
+          _resetPlayBtn(btn);
           _activeAudio = null;
           _activePlayBtn = null;
         };
 
         audio.onerror = (err) => {
+          if (reqId !== _previewReqId) return;
           console.error('试听加载失败:', err);
-          btn.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
-          btn.style.opacity = '1';
+          _resetPlayBtn(btn);
           _activeAudio = null;
           _activePlayBtn = null;
         };
 
         await audio.play();
+        if (reqId !== _previewReqId) {
+          audio.pause();
+          return;
+        }
         btn.style.opacity = '1';
         btn.innerHTML = '<svg viewBox="0 0 16 16" style="width: 10px; height: 10px; fill: currentColor;"><rect x="3" y="2" width="3.5" height="12"/><rect x="9.5" y="2" width="3.5" height="12"/></svg>';
       } catch (err) {
+        if (reqId !== _previewReqId) return;
         console.error('试听异常:', err);
-        btn.innerHTML = '<svg class="play-glyph" viewBox="0 0 16 16"><polygon points="4,2 14,8 4,14"/></svg>';
-        btn.style.opacity = '1';
+        _resetPlayBtn(btn);
         _activeAudio = null;
         _activePlayBtn = null;
         alert('试听加载失败: ' + err.message);
@@ -1767,36 +1799,52 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 
         elif path == "/api/preview-voice":
             all_v = get_all_voices()
-            voice_id = query.get("voice", [all_v[0]["id"]])[0]
-            voice_entry = next((v for v in all_v if v["id"] == voice_id), all_v[0])
-            preview_file = OUTPUT_DIR / f"preview_{voice_id}.mp3"
+            raw_vid = query.get("voice", [all_v[0]["id"]])[0]
+            voice_entry = next((v for v in all_v if v["id"] == raw_vid), all_v[0])
+            safe_vid = re.sub(r"[^a-zA-Z0-9_-]", "", str(voice_entry["id"])) or "default"
+            preview_file = OUTPUT_DIR / f"preview_{safe_vid}.mp3"
 
             if not preview_file.exists():
-                if voice_entry.get("type") == "custom":
-                    ok, err_msg = check_custom_tts_available()
-                    if not ok:
-                        self.send_response(500)
-                        self.send_header("Content-Type", "application/json; charset=utf-8")
-                        self.end_headers()
-                        self.wfile.write(json.dumps({"error": err_msg}).encode("utf-8"))
-                        return
-                    custom_runner = BASE_DIR / "custom_voice_tts.py"
-                    ref_audio = CUSTOM_VOICE_DIR / voice_entry.get("ref_audio", "my_recording.wav")
-                    ref_text = voice_entry.get("ref_text", "")
-                    py_bin = get_custom_tts_python()
-                    cmd = [
-                        py_bin, str(custom_runner),
-                        "--text", f"你好，我是{voice_entry['name']}，很高兴为您带来本期教程解说。",
-                        "--output-audio", str(preview_file),
-                        "--output-srt", str(preview_file.with_suffix(".srt")),
-                        "--ref-audio", str(ref_audio),
-                        "--ref-text", ref_text
-                    ]
-                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                else:
-                    text = f"你好，我是{voice_entry['name']}，很高兴为您带来本期功能教程解说。"
-                    cmd = get_edge_tts_cmd() + ["--voice", voice_entry["voice_id"], "--text", text, "--write-media", str(preview_file)]
-                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    if voice_entry.get("type") == "custom":
+                        ok, err_msg = check_custom_tts_available()
+                        if not ok:
+                            self.send_response(500)
+                            self.send_header("Content-Type", "application/json; charset=utf-8")
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"error": err_msg}).encode("utf-8"))
+                            return
+                        custom_runner = BASE_DIR / "custom_voice_tts.py"
+                        ref_audio = CUSTOM_VOICE_DIR / voice_entry.get("ref_audio", "my_recording.wav")
+                        ref_text = voice_entry.get("ref_text", "")
+                        py_bin = get_custom_tts_python()
+                        cmd = [
+                            py_bin, str(custom_runner),
+                            "--text", f"你好，我是{voice_entry['name']}，很高兴为您带来本期教程解说。",
+                            "--output-audio", str(preview_file),
+                            "--output-srt", str(preview_file.with_suffix(".srt")),
+                            "--ref-audio", str(ref_audio),
+                            "--ref-text", ref_text
+                        ]
+                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
+                    else:
+                        text = f"你好，我是{voice_entry['name']}，很高兴为您带来本期功能教程解说。"
+                        cmd = get_edge_tts_cmd() + ["--voice", voice_entry["voice_id"], "--text", text, "--write-media", str(preview_file)]
+                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25)
+                except subprocess.TimeoutExpired:
+                    preview_file.unlink(missing_ok=True)
+                    self.send_response(504)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "试听音频合成超时，请检查网络连接"}).encode("utf-8"))
+                    return
+                except Exception as e:
+                    preview_file.unlink(missing_ok=True)
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": f"试听合成异常: {str(e)}"}).encode("utf-8"))
+                    return
 
             if not preview_file.exists():
                 self.send_response(500)
@@ -1921,8 +1969,30 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 self.send_error(404, "File Not Found")
                 return
 
+            # 安全校验：严防路径穿越读取任意敏感文件（仅允许授权媒体目录与媒体后缀）
+            try:
+                req_path = Path(media_path).resolve()
+                allowed_roots = [
+                    DOWNLOADS_DIR.resolve(),
+                    UPLOADS_DIR.resolve(),
+                    RECORDINGS_DIR.resolve(),
+                    OUTPUT_DIR.resolve()
+                ]
+                allowed_exts = {".mp4", ".mov", ".webm", ".mkv", ".mp3", ".wav", ".srt"}
+                is_in_allowed_dir = any(
+                    req_path == r or str(req_path).startswith(str(r) + os.sep)
+                    for r in allowed_roots
+                )
+                if req_path.suffix.lower() not in allowed_exts or not is_in_allowed_dir or not req_path.is_file():
+                    self.send_error(403, "Forbidden Media Path")
+                    return
+                media_path = str(req_path)
+            except Exception:
+                self.send_error(403, "Invalid Media Path")
+                return
+
             file_size = os.path.getsize(media_path)
-            mime = "video/mp4" if media_path.endswith(".mp4") else "audio/mpeg" if media_path.endswith(".mp3") else "text/plain"
+            mime = "video/mp4" if media_path.endswith(".mp4") else "audio/mpeg" if media_path.endswith(".mp3") else "text/plain; charset=utf-8"
 
             # 检查 Range 请求 (HTTP 206 Partial Content 支持，视频流拖拽与断点续传)
             range_header = self.headers.get("Range")
@@ -1932,6 +2002,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     start = int(ranges[0]) if ranges[0] else 0
                     end = int(ranges[1]) if len(ranges) > 1 and ranges[1] else file_size - 1
                     end = min(end, file_size - 1)
+                    if start < 0 or start > end:
+                        start = 0
                     content_length = (end - start) + 1
 
                     self.send_response(206)
@@ -1978,149 +2050,155 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    def _read_json_body(self) -> dict:
+        try:
+            length = max(0, int(self.headers.get("Content-Length", 0)))
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length).decode("utf-8", errors="replace")
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        if path == "/api/upload":
-            raw_filename = query.get("filename", ["video.mp4"])[0]
-            clean_name = os.path.basename(urllib.parse.unquote(raw_filename))
-            target_path = UPLOADS_DIR / clean_name
+        try:
+            if path == "/api/upload":
+                raw_filename = query.get("filename", ["video.mp4"])[0]
+                clean_name = os.path.basename(urllib.parse.unquote(raw_filename)) or "video.mp4"
+                target_path = UPLOADS_DIR / clean_name
 
-            length = int(self.headers.get("Content-Length", 0))
-            remaining = length
-            with open(target_path, "wb") as f:
-                while remaining > 0:
-                    chunk = self.rfile.read(min(remaining, 64 * 1024))
-                    if not chunk: break
-                    f.write(chunk)
-                    remaining -= len(chunk)
+                length = max(0, int(self.headers.get("Content-Length", 0)))
+                remaining = length
+                with open(target_path, "wb") as f:
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(remaining, 64 * 1024))
+                        if not chunk: break
+                        f.write(chunk)
+                        remaining -= len(chunk)
 
-            dur = get_video_duration(target_path)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                "success": True,
-                "path": str(target_path.resolve()),
-                "filename": clean_name,
-                "duration": dur
-            }).encode("utf-8"))
-            return
+                dur = get_video_duration(target_path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "success": True,
+                    "path": str(target_path.resolve()),
+                    "filename": clean_name,
+                    "duration": dur
+                }).encode("utf-8"))
+                return
 
-        elif path == "/api/llm-config":
-            length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
-            save_llm_config(data)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(json.dumps({"success": True}).encode("utf-8"))
-            return
+            elif path == "/api/llm-config":
+                data = self._read_json_body()
+                save_llm_config(data)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True}).encode("utf-8"))
+                return
 
-        elif path == "/api/test-llm":
-            length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
-            ok, msg = test_llm_connection(data)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(json.dumps({"success": ok, "message": msg}, ensure_ascii=False).encode("utf-8"))
-            return
+            elif path == "/api/test-llm":
+                data = self._read_json_body()
+                ok, msg = test_llm_connection(data)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": ok, "message": msg}, ensure_ascii=False).encode("utf-8"))
+                return
 
-        elif path == "/api/ai-adapt-script":
-            length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            elif path == "/api/ai-adapt-script":
+                data = self._read_json_body()
+                text = str(data.get("text") or "")
+                duration = safe_duration(data.get("duration"), 42.5)
+                raw_vpath = str(data.get("videoPath") or "").strip()
+                video_path = Path(raw_vpath) if raw_vpath else None
 
-            text = data.get("text", "")
-            duration = float(data.get("duration", 42.5))
-            video_path = Path(data.get("videoPath", "")) if data.get("videoPath") else None
+                res = adapt_script_to_duration(text, duration, video_path)
 
-            res = adapt_script_to_duration(text, duration, video_path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "success": True,
+                    "script": res.get("script", ""),
+                    "source": res.get("source", "rule"),
+                    "phases": res.get("phases", []),
+                    "paragraphs": res.get("paragraphs", []),
+                    "message": res.get("message", "")
+                }, ensure_ascii=False).encode("utf-8"))
+                return
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                "success": True,
-                "script": res.get("script", ""),
-                "source": res.get("source", "rule"),
-                "phases": res.get("phases", []),
-                "paragraphs": res.get("paragraphs", []),
-                "message": res.get("message", "")
-            }, ensure_ascii=False).encode("utf-8"))
-            return
+            elif path == "/api/ai-script":
+                data = self._read_json_body()
+                raw_vpath = str(data.get("videoPath") or "").strip()
+                video_path = Path(raw_vpath) if raw_vpath else None
+                duration = safe_duration(data.get("duration"), 42.5)
+                topic = str(data.get("topic") or "新建工单与服务派发流程")
 
-        elif path == "/api/ai-script":
-            length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
+                script = generate_script(video_path, duration, topic)
 
-            video_path = Path(data.get("videoPath", "")) if data.get("videoPath") else None
-            duration = float(data.get("duration", 42.5))
-            topic = data.get("topic", "新建工单与服务派发流程")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "script": script}, ensure_ascii=False).encode("utf-8"))
+                return
 
-            script = generate_script(video_path, duration, topic)
+            elif path == "/api/ai-compress":
+                data = self._read_json_body()
+                text = str(data.get("text") or "")
+                duration = safe_duration(data.get("duration"), 42.5)
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(json.dumps({"success": True, "script": script}, ensure_ascii=False).encode("utf-8"))
-            return
+                compressed = compress_script_to_duration(text, duration)
 
-        elif path == "/api/ai-compress":
-            length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "compressed": compressed}, ensure_ascii=False).encode("utf-8"))
+                return
 
-            text = data.get("text", "")
-            duration = float(data.get("duration", 42.5))
+            elif path == "/api/ai-trim":
+                data = self._read_json_body()
+                text = str(data.get("text") or "")
+                duration = safe_duration(data.get("duration"), 42.5)
+                target_chars = int(duration * CHARS_PER_SECOND)
+                trimmed = compress_text_to_target(text, target_chars)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "script": trimmed}, ensure_ascii=False).encode("utf-8"))
+                return
 
-            compressed = compress_script_to_duration(text, duration)
+            elif path == "/api/generate":
+                data = self._read_json_body()
+                raw_vpath = str(data.get("videoPath") or "").strip()
+                if not raw_vpath or not os.path.exists(raw_vpath):
+                    raise ValueError("未找到指定的源录屏视频文件，请重新选择视频")
+                video_path = Path(raw_vpath)
+                script = str(data.get("script") or "").strip()
+                if not script:
+                    raise ValueError("解说词台词不能为空")
+                voice_id = str(data.get("voice") or "xiaoxiao")
+                rate = str(data.get("rate") or "+0%")
+                burn_subs = bool(data.get("burnSubtitles", True))
+                hold_last_frame = bool(data.get("holdLastFrame", True))
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(json.dumps({"success": True, "compressed": compressed}, ensure_ascii=False).encode("utf-8"))
-            return
+                all_v = get_all_voices()
+                voice_entry = next((v for v in all_v if v["id"] == voice_id), all_v[0])
 
-        elif path == "/api/ai-trim":
-            length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
-            text = data.get("text", "")
-            duration = float(data.get("duration", 42.5))
-            target_chars = int(duration * CHARS_PER_SECOND)
-            from ai_script_generator import compress_text_to_target
-            trimmed = compress_text_to_target(text, target_chars)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(json.dumps({"success": True, "script": trimmed}, ensure_ascii=False).encode("utf-8"))
-            return
+                ts = f"{int(time.time() * 1000)}_{os.getpid()}"
+                prefix = OUTPUT_DIR / f"tutorial_{ts}"
+                audio_path = prefix.with_suffix(".mp3")
+                srt_path = prefix.with_suffix(".srt")
+                final_video = prefix.with_name(f"tutorial_{ts}_final.mp4")
 
-        elif path == "/api/generate":
-            length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
+                font_size = safe_duration(data.get("fontSize"), 10.5)
+                margin_v = 22 if font_size <= 11.5 else 26
 
-            video_path = Path(data["videoPath"])
-            script = data["script"]
-            voice_id = data.get("voice", "xiaoxiao")
-            rate = data.get("rate", "+0%")
-            burn_subs = data.get("burnSubtitles", True)
-            hold_last_frame = data.get("holdLastFrame", True)
-
-            all_v = get_all_voices()
-            voice_entry = next((v for v in all_v if v["id"] == voice_id), all_v[0])
-
-            ts = int(time.time())
-            prefix = OUTPUT_DIR / f"tutorial_{ts}"
-            audio_path = prefix.with_suffix(".mp3")
-            srt_path = prefix.with_suffix(".srt")
-            final_video = prefix.with_name(f"tutorial_{ts}_final.mp4")
-
-            font_size = float(data.get("fontSize", 10.5))
-            margin_v = 22 if font_size <= 11.5 else 26
-
-            try:
                 if not shutil.which("ffmpeg"):
                     raise RuntimeError(
                         "系统未检测到 FFmpeg 核心工具！音视频合成与字幕压制需要 FFmpeg。\n"
@@ -2138,7 +2216,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     speed_factor = 1.0
                     try:
                         speed_pct = int(rate.replace("%", "").replace("+", ""))
-                        speed_factor = 1.0 + (speed_pct / 100.0)
+                        speed_factor = max(0.5, min(2.0, 1.0 + (speed_pct / 100.0)))
                     except Exception:
                         pass
                     custom_runner = BASE_DIR / "custom_voice_tts.py"
@@ -2154,7 +2232,10 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                         "--ref-audio", str(ref_audio),
                         "--ref-text", ref_text
                     ]
-                    run_res = subprocess.run(cmd, capture_output=True, text=True)
+                    try:
+                        run_res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                    except subprocess.TimeoutExpired:
+                        raise RuntimeError("专属音色神经推理超时（超过 300 秒），请尝试缩短单次台词长度或切换内置标准音色")
                     if run_res.returncode != 0:
                         err_msg = run_res.stderr.strip()
                         if "f5_tts" in err_msg or "torch" in err_msg or "No module named" in err_msg:
@@ -2174,7 +2255,10 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                         "--write-media", str(audio_path),
                         "--write-subtitles", str(srt_path)
                     ]
-                    subprocess.run(tts_cmd, check=True)
+                    try:
+                        subprocess.run(tts_cmd, check=True, timeout=120)
+                    except subprocess.TimeoutExpired:
+                        raise RuntimeError("Edge-TTS 在线语音合成超时（超过 120 秒），请检查网络连接后重试")
 
                 # 2. 净化 SRT 格式 (确保无重号、无悬挂数字、时间戳精准)
                 if srt_path.exists():
@@ -2234,7 +2318,10 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                         str(final_video)
                     ]
 
-                subprocess.run(ff_cmd, check=True)
+                try:
+                    subprocess.run(ff_cmd, check=True, timeout=300)
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError("FFmpeg 视频渲染合成超时（超过 300 秒）")
 
                 resp = {
                     "success": True,
@@ -2244,16 +2331,17 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     "srtUrl": f"/media?path={urllib.parse.quote(str(srt_path))}"
                 }
                 self.send_response(200)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.end_headers()
                 self.wfile.write(json.dumps(resp).encode("utf-8"))
-            except Exception as e:
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode("utf-8"))
-        else:
-            self.send_error(404, "Endpoint Not Found")
+                return
+            else:
+                self.send_error(404, "Endpoint Not Found")
+        except Exception as e:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": False, "error": str(e), "message": str(e)}, ensure_ascii=False).encode("utf-8"))
 
 def main():
     target_port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT

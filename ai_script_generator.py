@@ -27,9 +27,17 @@ CHARS_PER_SECOND = 4.3
 OPENSCREEN_RECORDINGS_DIR = Path.home() / "Library/Application Support/openscreen/recordings"
 CONFIG_FILE = Path(__file__).resolve().parent / "llm_config.json"
 
+def safe_duration(val, default: float = 42.5) -> float:
+    """安全解析视频时长，防御 None / NaN / Inf / 非法字符串"""
+    try:
+        d = float(val)
+        return d if math.isfinite(d) and d > 0 else default
+    except (TypeError, ValueError):
+        return default
+
 def normalize_api_url(url: str) -> str:
     """自动纠正/补齐 standard OpenAI 兼容接口地址"""
-    u = url.strip().rstrip('/')
+    u = str(url or "").strip().rstrip('/')
     if not u:
         return "https://api.deepseek.com/v1/chat/completions"
     if not u.endswith('/chat/completions'):
@@ -61,10 +69,12 @@ def save_llm_config(cfg: dict):
 
 def test_llm_connection(api_config: dict) -> tuple:
     """测试大模型 API 连通性"""
-    raw_url = api_config.get("apiUrl", "https://api.deepseek.com/v1")
+    if not isinstance(api_config, dict):
+        api_config = {}
+    raw_url = str(api_config.get("apiUrl") or "https://api.deepseek.com/v1")
     api_url = normalize_api_url(raw_url)
-    api_key = api_config.get("apiKey", "").strip()
-    model = api_config.get("model", "deepseek-chat").strip() or "deepseek-chat"
+    api_key = str(api_config.get("apiKey") or "").strip()
+    model = str(api_config.get("model") or "deepseek-chat").strip() or "deepseek-chat"
 
     if not api_key:
         return False, "请先填入有效的 API Key！"
@@ -88,9 +98,14 @@ def test_llm_connection(api_config: dict) -> tuple:
         req = urllib.request.Request(api_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=15) as resp:
             res_data = json.loads(resp.read().decode("utf-8"))
-            msg = res_data.get("choices", [{}])[0].get("message", {})
-            reply = msg.get("content", "").strip()
-            reasoning = msg.get("reasoning_content", "").strip()
+            choices = res_data.get("choices") if isinstance(res_data, dict) else None
+            if not choices or not isinstance(choices, list) or not isinstance(choices[0], dict):
+                return False, "接口返回格式异常：缺少有效的 choices 字段"
+            msg = choices[0].get("message") or {}
+            if not isinstance(msg, dict):
+                msg = {}
+            reply = str(msg.get("content") or "").strip()
+            reasoning = str(msg.get("reasoning_content") or "").strip()
             if not reply and reasoning:
                 reply = "连接成功 (推理就绪)"
             elif not reply:
@@ -106,10 +121,12 @@ def test_llm_connection(api_config: dict) -> tuple:
 
 def call_llm_api(prompt: str, system_prompt: str, api_config: dict) -> tuple:
     """调用用户配置的大模型 API (兼容 OpenAI / DeepSeek / 智谱 GLM 等标准接口)"""
-    raw_url = api_config.get("apiUrl", "https://api.deepseek.com/v1")
+    if not isinstance(api_config, dict):
+        api_config = {}
+    raw_url = str(api_config.get("apiUrl") or "https://api.deepseek.com/v1")
     api_url = normalize_api_url(raw_url)
-    api_key = api_config.get("apiKey", "").strip()
-    model = api_config.get("model", "deepseek-chat").strip() or "deepseek-chat"
+    api_key = str(api_config.get("apiKey") or "").strip()
+    model = str(api_config.get("model") or "deepseek-chat").strip() or "deepseek-chat"
 
     if not api_key:
         return None, "未配置 API Key"
@@ -135,13 +152,15 @@ def call_llm_api(prompt: str, system_prompt: str, api_config: dict) -> tuple:
         req = urllib.request.Request(api_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=40) as resp:
             res_data = json.loads(resp.read().decode("utf-8"))
-            choices = res_data.get("choices", [])
-            if not choices:
+            choices = res_data.get("choices") if isinstance(res_data, dict) else None
+            if not choices or not isinstance(choices, list) or not isinstance(choices[0], dict):
                 return None, "接口未返回有效 choices 数据"
-            msg = choices[0].get("message", {})
-            content = msg.get("content", "").strip()
-            reasoning = msg.get("reasoning_content", "").strip()
-            finish_reason = choices[0].get("finish_reason", "")
+            msg = choices[0].get("message") or {}
+            if not isinstance(msg, dict):
+                msg = {}
+            content = str(msg.get("content") or "").strip()
+            reasoning = str(msg.get("reasoning_content") or "").strip()
+            finish_reason = str(choices[0].get("finish_reason") or "")
 
             if not content:
                 if finish_reason == "length":
@@ -160,17 +179,21 @@ def call_llm_api(prompt: str, system_prompt: str, api_config: dict) -> tuple:
         return None, f"调用异常: {str(e)}"
 
 def clean_llm_script_output(text: str) -> list:
-    """清理大模型可能输出的开场废话、Markdown 标题或分段前缀"""
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    """清理大模型可能输出的开场废话、Markdown 代码块/标题或分段前缀"""
+    cleaned_raw = clean_script_text(str(text or ""))
+    lines = [line.strip() for line in cleaned_raw.split("\n") if line.strip()]
     filtered_lines = []
     for l in lines:
+        if re.match(r"^```", l):
+            continue
         if re.search(r"^(好的，)?(以下是|为您生成|为您润色|为您准备|改写后的).*?[：:]\s*$", l):
             continue
         filtered_lines.append(l)
 
     cleaned_paras = []
     for l in filtered_lines:
-        t = re.sub(r"\*\*|\*", "", l).strip()
+        t = re.sub(r"^#+\s*", "", l)
+        t = re.sub(r"\*\*|\*", "", t).strip()
         # 过滤纯标题行，如 "第一段 · 开场说明" 或 "分镜 1: 开场"
         if re.match(r"^(第[一二三四五六七八九十\d]+[段幕部分]|分镜\s*\d+|步骤\s*\d+|[Pp]hase\s*\d+)[\s·:：、.-]*([\u4e00-\u9fa5\w\s]{0,15})[：:]?$", t):
             continue
@@ -188,7 +211,8 @@ def smart_offline_distribute(text: str, num_phases: int = 4) -> list:
     将用户原本的操作文本，按真实语义句子和标点符号自然划分为 num_phases 段，
     绝不无中生有添加假菜单、假动作或机械套话（杜绝“随后仔细核对并...”等机械模板）。
     """
-    clean = text.strip()
+    num_phases = max(1, int(num_phases or 1))
+    clean = str(text or "").strip()
     if not clean:
         return ["操作开始。"] * num_phases
 
@@ -205,7 +229,7 @@ def smart_offline_distribute(text: str, num_phases: int = 4) -> list:
             merged_sents.append(c)
             i += 1
 
-    # 如果整句少于分镜数，拆逗号
+    # 如果整句少于分镜数，仅在逗号处且累计字数达标时拆分子句
     if len(merged_sents) < num_phases:
         expanded = []
         for s in merged_sents:
@@ -213,11 +237,11 @@ def smart_offline_distribute(text: str, num_phases: int = 4) -> list:
             cur = ""
             for p in parts:
                 cur += p
-                if len(cur) >= 12 or p in ["，", ","]:
+                if p in ["，", ","] and len(cur) >= 10:
                     expanded.append(cur)
                     cur = ""
             if cur:
-                if expanded:
+                if expanded and len(cur) < 6:
                     expanded[-1] += cur
                 else:
                     expanded.append(cur)
@@ -232,6 +256,33 @@ def smart_offline_distribute(text: str, num_phases: int = 4) -> list:
         if t:
             norm_units.append(t)
 
+    if not norm_units:
+        norm_units = [clean]
+
+    # 当单元数仍少于分镜数时，按长度对最长单元进行自然拆半，严禁注入假套话
+    while len(norm_units) < num_phases:
+        longest_idx = max(range(len(norm_units)), key=lambda idx: len(norm_units[idx]))
+        target = norm_units[longest_idx]
+        if len(target) < 4:
+            break
+        # 优先在中间附近的逗号/顿号/空格处切分，否则取中点
+        mid = len(target) // 2
+        split_pos = mid
+        for offset in range(min(6, mid)):
+            for candidate in (mid + offset, mid - offset):
+                if 1 < candidate < len(target) - 1 and target[candidate] in "，,、 ":
+                    split_pos = candidate + 1
+                    break
+            else:
+                continue
+            break
+        left = re.sub(r"[，,；;、\s]+$", "", target[:split_pos]).strip()
+        right = re.sub(r"^[，,；;、\s]+", "", target[split_pos:]).strip()
+        if left and right:
+            norm_units[longest_idx:longest_idx + 1] = [left, right]
+        else:
+            break
+
     # 放入桶
     buckets = [[] for _ in range(num_phases)]
     if len(norm_units) <= num_phases:
@@ -239,11 +290,7 @@ def smart_offline_distribute(text: str, num_phases: int = 4) -> list:
             buckets[min(idx, num_phases - 1)].append(u)
         for idx in range(num_phases):
             if not buckets[idx]:
-                prev_b = buckets[max(0, idx - 1)]
-                if len(prev_b) > 1:
-                    buckets[idx].append(prev_b.pop())
-                else:
-                    buckets[idx].append("继续按界面指引完成当前操作")
+                buckets[idx].append(norm_units[-1])
     else:
         step_chunk = len(norm_units) / num_phases
         for i, u in enumerate(norm_units):
@@ -257,7 +304,7 @@ def smart_offline_distribute(text: str, num_phases: int = 4) -> list:
         p_text = re.sub(r"[，,；;、\s]+$", "", p_text)
         if p_text and not re.search(r"[。！？]$", p_text):
             p_text += "。"
-        result.append(p_text or "继续按界面指引完成操作。")
+        result.append(p_text or (clean if clean.endswith("。") else clean + "。"))
 
     return result
 
@@ -266,10 +313,10 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
     核心入口：根据用户真实总结的操作步骤，严卡视频时长与运镜节拍进行深度拟合与润色
     返回字典: {"script": str, "source": "llm"|"rule", "phases": list, "paragraphs": list, "message": str}
     """
-    dur = max(5.0, duration_sec)
+    dur = max(5.0, safe_duration(duration_sec, 42.5))
     target_chars = int(dur * CHARS_PER_SECOND)
     safe_chars = max(20, int(dur * 3.8))
-    clean_text = user_summary.strip() if user_summary else ""
+    clean_text = str(user_summary or "").strip()
     if not clean_text:
         return {"script": "", "source": "none", "phases": [], "paragraphs": [], "message": "输入内容为空"}
 
@@ -278,10 +325,10 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
     phases = analyze_telemetry_phases(beats, dur)
 
     # 加载已保存的大模型配置
-    cfg = api_config or load_llm_config()
+    cfg = api_config if isinstance(api_config, dict) else load_llm_config()
 
     # 1. 如果已配置大模型 API Key，执行真正的大模型深度润色（音画分镜联动）
-    if cfg and cfg.get("apiKey") and cfg.get("apiKey").strip():
+    if cfg and cfg.get("apiKey") and str(cfg.get("apiKey")).strip():
         sys_dir = cfg.get("systemPrompt", "你是一名资深的软件教程解说导演。请根据用户提供的系统真实操作记录，将其润色为一段口语自然、清晰易懂、节奏舒适的教程旁白解说词。")
         style_dir = cfg.get("stylePrompt", "要求：\n1. 语言风格：口语自然、清晰易懂，杜绝机械播音腔与大而无当的公文套话；\n2. 事实边界：100% 严格依照用户给定的真实操作，绝不脑补或虚构未提及的菜单与功能；\n3. 步骤结构：开场简短引入 -> 步骤自然衔接 -> 操作结果收尾。")
 
@@ -316,7 +363,9 @@ def adapt_script_to_duration(user_summary: str, duration_sec: float, video_path:
         llm_res, err_msg = call_llm_api(user_prompt, full_sys_prompt, cfg)
         if llm_res:
             clean_paras = clean_llm_script_output(llm_res)
-            if len(clean_paras) != len(phases):
+            if not clean_paras:
+                clean_paras = smart_offline_distribute(clean_text, len(phases))
+            elif len(clean_paras) != len(phases):
                 clean_paras = smart_offline_distribute("\n\n".join(clean_paras), len(phases))
 
             final_paras = []
@@ -417,16 +466,6 @@ def run_local_engine(clean_text: str, target_chars: int, dur: float, phases: lis
 
     if chars_count > target_chars + 12:
         return compress_text_to_target(clean_text, target_chars)
-
-    return expand_summary_to_target(clean_text, target_chars, dur)
-
-    if abs(chars_count - target_chars) <= 12:
-        return format_clean_paragraphs(clean_text)
-
-    if chars_count > target_chars + 12:
-        return compress_text_to_target(clean_text, target_chars)
-
-    return expand_summary_to_target(clean_text, target_chars, dur)
 
     return expand_summary_to_target(clean_text, target_chars, dur)
 
@@ -715,25 +754,62 @@ def list_available_openscreen_projects() -> list:
         })
     return projs
 
+def _adjust_ms_for_trims(raw_ms: float, trims: list, is_trimmed_export: bool):
+    """若当前视频为经过剪辑裁剪的导出成片，扣除该时间点之前的 trimRegions 裁剪时长"""
+    if not is_trimmed_export or not trims:
+        return round(raw_ms / 1000.0, 1)
+    deducted_ms = 0.0
+    for tr in trims:
+        t_start = float(tr.get("startMs", 0))
+        t_end = float(tr.get("endMs", 0))
+        if t_end <= t_start:
+            continue
+        if t_start <= raw_ms <= t_end:
+            return None
+        if t_end < raw_ms:
+            deducted_ms += (t_end - t_start)
+    return round(max(0.0, raw_ms - deducted_ms) / 1000.0, 1)
+
 def extract_openscreen_beats(video_path: Path, override_proj: str = None):
     """提取视频相关的 OpenScreen 动作节拍 (镜头特写 + 鼠标交互)"""
     beats = []
     if not video_path:
         return beats
 
+    video_path = Path(video_path)
     proj_file, cursor_file, _ = find_matching_openscreen_project(video_path, override_proj)
+    trims = []
+    is_trimmed_export = False
 
     if proj_file and proj_file.exists():
         try:
             data = json.loads(proj_file.read_text(encoding="utf-8"))
+            trims = data.get("editor", {}).get("trimRegions", []) or []
+            if trims:
+                v_dur = get_file_duration(video_path)
+                cand_mp4 = proj_file.with_suffix(".mp4")
+                cand_dur = get_file_duration(cand_mp4) if cand_mp4.exists() else 0.0
+                trim_dur = sum((t.get("endMs", 0) - t.get("startMs", 0)) / 1000.0 for t in trims)
+                effective_dur = max(0.0, cand_dur - trim_dur)
+                if v_dur > 0 and cand_dur > 0 and abs(v_dur - effective_dur) < abs(v_dur - cand_dur):
+                    is_trimmed_export = True
+
             zooms = data.get("editor", {}).get("zoomRegions", [])
             for z in zooms:
+                s_sec = _adjust_ms_for_trims(float(z.get("startMs", 0)), trims, is_trimmed_export)
+                e_sec = _adjust_ms_for_trims(float(z.get("endMs", 0)), trims, is_trimmed_export)
+                if s_sec is None and e_sec is None:
+                    continue
+                if s_sec is None:
+                    s_sec = max(0.0, e_sec - 1.5)
+                if e_sec is None or e_sec <= s_sec:
+                    e_sec = round(s_sec + 2.1, 1)
                 beats.append({
-                    "start": round(z.get("startMs", 0) / 1000, 1),
-                    "end": round(z.get("endMs", 0) / 1000, 1),
+                    "start": s_sec,
+                    "end": e_sec,
                     "type": "zoom",
                     "label": "镜头特写",
-                    "focus": z.get("focus", {})
+                    "focus": z.get("focus") or {}
                 })
         except Exception:
             pass
@@ -745,14 +821,16 @@ def extract_openscreen_beats(video_path: Path, override_proj: str = None):
             clicks = [s for s in samples if s.get("interactionType") in ["down", "click"]]
             last_t = -999.0
             for c in clicks:
-                t = round(c.get("timeMs", 0) / 1000, 1)
+                t = _adjust_ms_for_trims(float(c.get("timeMs", 0)), trims, is_trimmed_export)
+                if t is None:
+                    continue
                 if abs(t - last_t) >= 0.3:
                     beats.append({
                         "start": t,
                         "type": "click",
                         "label": "鼠标点击",
-                        "cx": round(c.get("cx", 0.5), 2),
-                        "cy": round(c.get("cy", 0.5), 2)
+                        "cx": round(float(c.get("cx", 0.5)), 2),
+                        "cy": round(float(c.get("cy", 0.5)), 2)
                     })
                     last_t = t
         except Exception:
@@ -766,7 +844,7 @@ def analyze_telemetry_phases(beats: list, total_duration: float) -> list:
     根据 OpenScreen 遥测节拍，将整段视频智能聚类划分为 3~6 个连贯的导演分镜阶段 (Phases)
     每个阶段包含起始时间、时长、运镜类型、视觉聚焦提示以及严格的字数预算。
     """
-    dur = max(5.0, float(total_duration))
+    dur = max(5.0, safe_duration(total_duration, 42.5))
     zooms = [b for b in beats if b.get('type') == 'zoom']
     clicks = [b for b in beats if b.get('type') == 'click']
 
