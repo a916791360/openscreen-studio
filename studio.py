@@ -142,7 +142,7 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OpenScreen Studio · Tutorial Workbench</title>
+  <title>OpenScreen Studio</title>
   <style>
     :root, [data-theme="dark"] {
       --bg-base: #090b10;
@@ -409,22 +409,20 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
 <body>
 
   <!-- Top Tool Header -->
-  <header style="background: var(--bg-header); border-bottom: 1px solid var(--border-subtle); padding: 10px 20px; position: sticky; top: 0; z-index: 100;">
-    <div style="max-width: 1400px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between;">
-      <div style="display: flex; align-items: center; gap: 10px;">
+  <header style="background: var(--bg-header); border-bottom: 1px solid var(--border-subtle); position: sticky; top: 0; z-index: 100;">
+    <div style="max-width: 1400px; margin: 0 auto; padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 8px;">
         <span style="font-weight: 700; font-size: 13px; letter-spacing: 0.5px; color: var(--text-primary);">OPENSCREEN STUDIO</span>
-        <span style="color: var(--border-default);">/</span>
-        <span class="mono" style="font-size: 11px; color: var(--text-secondary);">Tutorial Workbench</span>
-        <span class="tag mono" style="font-size: 10px; color: var(--text-muted);">v1.3</span>
+        <span class="tag mono" style="font-size: 10px; color: var(--text-muted);">v2.0</span>
       </div>
-      <div style="display: flex; align-items: center; gap: 14px; font-size: 11px; color: var(--text-muted);">
+      <div style="display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--text-muted);">
         <button class="btn btn-sm" id="theme-toggle-btn" onclick="toggleTheme()" style="gap: 5px;">
           <span id="theme-icon">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
           </span>
           <span id="theme-text">浅色模式</span>
         </button>
-        <span class="mono">Engine: F5-TTS (私有克隆) · Edge-TTS · OpenScreen</span>
+        <span class="mono">Engine: F5-TTS · Edge-TTS · OpenScreen</span>
         <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--color-success);" title="服务在线"></span>
       </div>
     </div>
