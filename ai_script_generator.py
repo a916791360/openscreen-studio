@@ -119,7 +119,14 @@ def test_llm_connection(api_config: dict) -> tuple:
     except Exception as e:
         return False, f"连接异常: {str(e)}"
 
-def call_llm_api(prompt: str, system_prompt: str, api_config: dict) -> tuple:
+def call_llm_api(
+    prompt: str,
+    system_prompt: str,
+    api_config: dict,
+    max_tokens: int = 2048,
+    timeout: int = 40,
+    temperature: float = 0.4
+) -> tuple:
     """调用用户配置的大模型 API (兼容 OpenAI / DeepSeek / 智谱 GLM 等标准接口)"""
     if not isinstance(api_config, dict):
         api_config = {}
@@ -144,13 +151,13 @@ def call_llm_api(prompt: str, system_prompt: str, api_config: dict) -> tuple:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.4,
-        "max_tokens": 2048
+        "temperature": temperature,
+        "max_tokens": max_tokens
     }
 
     try:
         req = urllib.request.Request(api_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=40) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             res_data = json.loads(resp.read().decode("utf-8"))
             choices = res_data.get("choices") if isinstance(res_data, dict) else None
             if not choices or not isinstance(choices, list) or not isinstance(choices[0], dict):
@@ -959,3 +966,226 @@ def generate_script(video_path: Path, duration_sec: float, user_topic: str = "",
 def compress_script_to_duration(text: str, duration_sec: float, api_config: dict = None):
     res = adapt_script_to_duration(text, duration_sec, None, api_config)
     return res.get("script", "")
+
+def parse_srt_blocks(srt_text: str) -> list:
+    """将标准 SRT 文本解析为带序号与时间戳的条目列表"""
+    blocks = re.split(r'\n\s*\n', str(srt_text or '').strip())
+    items = []
+    for b in blocks:
+        lines = [l.strip() for l in b.splitlines() if l.strip()]
+        time_idx = next((i for i, l in enumerate(lines) if '-->' in l), -1)
+        if time_idx == -1:
+            continue
+        time_line = lines[time_idx].replace('.', ',')
+        text_lines = [l for l in lines[time_idx + 1:] if not l.isdigit()]
+        text_body = " ".join(text_lines).strip()
+        if text_body:
+            items.append({
+                "index": len(items) + 1,
+                "time": time_line,
+                "text": text_body
+            })
+    return items
+
+def _extract_json_dict(raw_text: str) -> dict:
+    """从大模型返回文本中健壮抽取 JSON 映射字典（兼容 Markdown 代码块或前后说明）"""
+    text = str(raw_text or "").strip()
+    if not text:
+        return {}
+    # 优先直接解析或提取最外层 {}
+    candidates = [text]
+    m_code = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text, re.IGNORECASE)
+    if m_code:
+        candidates.insert(0, m_code.group(1))
+    first_brace = text.find('{')
+    last_brace = text.rfind('}')
+    if first_brace != -1 and last_brace > first_brace:
+        candidates.append(text[first_brace:last_brace + 1])
+
+    for cand in candidates:
+        try:
+            obj = json.loads(cand)
+            if isinstance(obj, dict):
+                return {str(k).strip(): str(v).strip() for k, v in obj.items() if v is not None}
+        except Exception:
+            continue
+    return {}
+
+def translate_srt_bilingual(
+    srt_text: str,
+    target_lang: str = "English",
+    bilingual_order: str = "orig_top",
+    api_config: dict = None
+) -> tuple:
+    """
+    基于当前绑定的 AI 大模型，将单语 SRT 字幕按上下文一次性批量翻译为双语对照字幕。
+    返回: (bilingual_srt_text, bilingual_items, warning_msg)
+    """
+    items = parse_srt_blocks(srt_text)
+    if not items:
+        return srt_text, [], "字幕内容为空，无法生成双语字幕"
+
+    cfg = api_config if isinstance(api_config, dict) else load_llm_config()
+    api_key = str(cfg.get("apiKey") or "").strip()
+    if not api_key:
+        fallback_items = [{"index": it["index"], "time": it["time"], "primary": it["text"], "secondary": ""} for it in items]
+        return srt_text, fallback_items, "未配置大模型 API Key，双语字幕已跳过并保留单语"
+
+    lang_label = str(target_lang or "English").strip() or "English"
+    sys_prompt = (
+        f"你是一名资深的软件操作教程本地化字幕专家。请将用户提供的编号字幕列表逐条翻译为自然、地道、精炼易读的【{lang_label}】字幕。\n"
+        f"要求：\n"
+        f"1. 字幕体风格：译文应简洁口语化、自然流畅，适合视频底部双语展示，避免冗长书面从句。\n"
+        f"2. 专有名词保护：产品名称、英文缩写及技术术语（如 ASC、AI、SaaS、UI、API、PC、TTS 等）请保持原始大写或规范拼写。\n"
+        f"3. 严格映射输出：必须且仅输出一个合法的 JSON 对象，Key 为对应字幕的编号字符串（如 \"1\", \"2\"），Value 为对应的 {lang_label} 译文字符串；编号与条目数量必须与输入 100% 一一对应，不要合并或遗漏任何一条。"
+    )
+
+    translations = {}
+    chunk_size = 25
+    failed_chunks = 0
+    last_err = ""
+
+    for start in range(0, len(items), chunk_size):
+        chunk = items[start:start + chunk_size]
+        payload_dict = {str(it["index"]): it["text"] for it in chunk}
+        user_prompt = (
+            f"请将以下 {len(chunk)} 条软件教程字幕结合上下文翻译为【{lang_label}】，并严格以 JSON 对象格式返回：\n"
+            f"{json.dumps(payload_dict, ensure_ascii=False, indent=2)}"
+        )
+
+        # 失败时轻量重试 1 次（应对推理模型偶发截断或 JSON 格式瑕疵）
+        parsed_map = {}
+        for attempt in range(2):
+            cur_tokens = 3072 if attempt == 0 else 4096
+            raw_res, err = call_llm_api(
+                user_prompt,
+                sys_prompt,
+                cfg,
+                max_tokens=cur_tokens,
+                timeout=60,
+                temperature=0.2
+            )
+            if raw_res:
+                parsed_map = _extract_json_dict(raw_res)
+                if parsed_map:
+                    break
+                last_err = "模型未返回有效 JSON 译文结构"
+            else:
+                last_err = err or "大模型调用失败"
+
+        if not parsed_map:
+            failed_chunks += 1
+        else:
+            translations.update(parsed_map)
+
+    bilingual_items = []
+    srt_blocks = []
+    translated_count = 0
+
+    for it in items:
+        idx_str = str(it["index"])
+        orig_text = it["text"]
+        trans_text = str(translations.get(idx_str, "")).replace("\n", " ").strip()
+        if trans_text:
+            translated_count += 1
+
+        if bilingual_order == "trans_top" and trans_text:
+            primary_line = trans_text
+            secondary_line = orig_text
+        else:
+            primary_line = orig_text
+            secondary_line = trans_text
+
+        bilingual_items.append({
+            "index": it["index"],
+            "time": it["time"],
+            "primary": primary_line,
+            "secondary": secondary_line
+        })
+
+        if secondary_line:
+            srt_blocks.append(f"{it['index']}\n{it['time']}\n{primary_line}\n{secondary_line}")
+        else:
+            srt_blocks.append(f"{it['index']}\n{it['time']}\n{primary_line}")
+
+    bilingual_srt = "\n\n".join(srt_blocks) + "\n"
+    warning_msg = ""
+    if translated_count == 0:
+        warning_msg = f"双语翻译未成功 ({last_err})，已安全回退为单语字幕"
+    elif translated_count < len(items) or failed_chunks > 0:
+        warning_msg = f"部分字幕翻译缺失 ({translated_count}/{len(items)} 条已译)，其余条目已保留原文"
+
+    return bilingual_srt, bilingual_items, warning_msg
+
+def _srt_time_to_ass(ts: str) -> str:
+    """将 SRT 时间戳 HH:MM:SS,mmm 转为 ASS 格式 H:MM:SS.cs"""
+    m = re.match(r'^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})$', ts.strip())
+    if not m:
+        return "0:00:00.00"
+    h = int(m.group(1))
+    mi = int(m.group(2))
+    s = int(m.group(3))
+    ms_str = m.group(4).ljust(3, '0')[:3]
+    cs = min(99, round(int(ms_str) / 10))
+    return f"{h}:{mi:02d}:{s:02d}.{cs:02d}"
+
+def _escape_ass_text(text: str) -> str:
+    """转义文本中的花括号与反斜杠，避免误触发 ASS 样式标签解析"""
+    t = str(text or "").replace("\\", "/").replace("{", "(").replace("}", ")")
+    return re.sub(r'\s+', ' ', t).strip()
+
+def build_bilingual_ass(
+    bilingual_items: list,
+    font_name: str,
+    font_size: float = 10.5,
+    margin_v: int = 18
+) -> str:
+    """
+    构建电影级双语分级排版 ASS 字幕文件：
+    - 使用与 FFmpeg SRT 默认一致的 384x288 虚拟分辨率，保持字号视觉尺度完全一致
+    - 主行（上方）：清晰纯白 + 细腻深色描边阴影
+    - 副行（下方）：按主字号 78% 缩放 + 柔和银灰色调，WrapStyle=0 智能均衡换行，减少底栏遮挡
+    """
+    main_fs = max(7.0, float(font_size or 10.5))
+    sub_fs = round(max(6.2, main_fs * 0.78), 1)
+    safe_font = str(font_name or "PingFang SC").replace(",", " ")
+    safe_margin_v = max(10, int(margin_v or 18))
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 384\n"
+        "PlayResY: 288\n"
+        "WrapStyle: 0\n"
+        "ScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,{safe_font},{main_fs},&H00FFFFFF,&H00FFFFFF,&H40000000,&H85000000,"
+        f"0,0,0,0,100,100,0,0,1,1.3,0.7,2,14,14,{safe_margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+
+    events = []
+    for item in bilingual_items:
+        time_range = str(item.get("time") or "")
+        if "-->" not in time_range:
+            continue
+        start_raw, end_raw = [part.strip() for part in time_range.split("-->", 1)]
+        start_ass = _srt_time_to_ass(start_raw)
+        end_ass = _srt_time_to_ass(end_raw)
+        primary = _escape_ass_text(item.get("primary", ""))
+        secondary = _escape_ass_text(item.get("secondary", ""))
+        if not primary and not secondary:
+            continue
+
+        if secondary:
+            # 副行缩小至 78% 并采用柔和浅银蓝（ASS BGR: &H00EDE4D8&）
+            line_text = f"{primary}\\N{{\\fs{sub_fs}\\c&H00EDE4D8&}}{secondary}"
+        else:
+            line_text = primary
+        events.append(f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{line_text}")
+
+    return header + "\n".join(events) + "\n"

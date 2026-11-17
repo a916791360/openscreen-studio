@@ -39,6 +39,8 @@ from ai_script_generator import (
     generate_script,
     compress_script_to_duration,
     compress_text_to_target,
+    translate_srt_bilingual,
+    build_bilingual_ass,
     safe_duration,
     CHARS_PER_SECOND
 )
@@ -578,7 +580,7 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
               <span id="speech-sec-text">朗读预估: 0.0s</span>
               <span id="delta-sec-text">时间偏差: 0.0s</span>
             </div>
-            <div style="display: flex; align-items: center; gap: 14px;">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
               <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary);">
                 <span>字幕字号:</span>
                 <select id="sub-fontsize-select" style="background: var(--bg-well); border: 1px solid var(--border-default); color: var(--text-primary); border-radius: 4px; padding: 2px 6px; font-size: 11px; outline: none; cursor: pointer;">
@@ -595,6 +597,27 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
                 <input type="checkbox" id="burn-sub-toggle" checked style="accent-color: var(--color-accent);">
                 <span>压制字幕</span>
               </label>
+              <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer; user-select: none; color: var(--text-primary);" title="开启后将自动调用已绑定的 AI 大模型，将同步字幕翻译为双语对照字幕">
+                <input type="checkbox" id="bilingual-sub-toggle" onchange="handleBilingualToggle()" style="accent-color: var(--color-accent);">
+                <span>双语字幕</span>
+              </label>
+              <div id="bilingual-options-wrap" style="display: none; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary);">
+                <select id="bilingual-lang-select" onchange="saveBilingualPrefs()" title="选择副字幕目标语言" style="background: var(--bg-well); border: 1px solid var(--border-default); color: var(--text-primary); border-radius: 4px; padding: 2px 6px; font-size: 11px; outline: none; cursor: pointer;">
+                  <option value="English">英语 (English)</option>
+                  <option value="Japanese">日语 (日本語)</option>
+                  <option value="Korean">韩语 (한국어)</option>
+                  <option value="Traditional Chinese">繁体中文</option>
+                  <option value="Spanish">西班牙语 (Español)</option>
+                  <option value="French">法语 (Français)</option>
+                  <option value="German">德语 (Deutsch)</option>
+                  <option value="custom">自定义语言...</option>
+                </select>
+                <input type="text" id="bilingual-custom-lang" placeholder="如：泰语 / 印尼语" onchange="saveBilingualPrefs()" style="display: none; width: 108px; background: var(--bg-well); border: 1px solid var(--border-default); color: var(--text-primary); border-radius: 4px; padding: 2px 6px; font-size: 11px; outline: none;">
+                <select id="bilingual-order-select" onchange="saveBilingualPrefs()" title="双语上下排布顺序" style="background: var(--bg-well); border: 1px solid var(--border-default); color: var(--text-primary); border-radius: 4px; padding: 2px 6px; font-size: 11px; outline: none; cursor: pointer;">
+                  <option value="orig_top">上原文 · 下译文</option>
+                  <option value="trans_top">上译文 · 下原文</option>
+                </select>
+              </div>
             </div>
           </div>
         </div>
@@ -609,10 +632,11 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
 
       <!-- Synthesis Result Drawer -->
       <section id="result-deck" class="card" style="display: none; padding: 16px; border: 1px solid var(--color-success);">
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-          <div style="display: flex; align-items: center; gap: 8px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
             <span style="color: var(--color-success); font-weight: 700; font-size: 13px;">渲染完成</span>
             <span class="mono" id="result-filename-badge" style="font-size: 11px; color: var(--text-secondary);"></span>
+            <span class="tag mono" id="result-bilingual-badge" style="display: none; font-size: 10px;"></span>
           </div>
           <div style="display: flex; gap: 8px;">
             <a id="btn-dl-srt" href="#" download class="btn btn-sm">下载字幕 (SRT)</a>
@@ -753,10 +777,63 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
     // 初始化
     async function initWorkbench() {
       initTheme();
+      initBilingualPrefs();
       setupDragDrop();
       await loadLlmConfig();
       await loadVoices();
       await fetchRecordings();
+    }
+
+    function initBilingualPrefs() {
+      try {
+        const enabled = localStorage.getItem('openscreen_bilingual_enabled') === '1';
+        const lang = localStorage.getItem('openscreen_bilingual_lang') || 'English';
+        const customLang = localStorage.getItem('openscreen_bilingual_custom_lang') || '';
+        const order = localStorage.getItem('openscreen_bilingual_order') || 'orig_top';
+
+        const toggle = document.getElementById('bilingual-sub-toggle');
+        const langSel = document.getElementById('bilingual-lang-select');
+        const customIn = document.getElementById('bilingual-custom-lang');
+        const orderSel = document.getElementById('bilingual-order-select');
+
+        if (toggle) toggle.checked = enabled;
+        if (langSel) langSel.value = Array.from(langSel.options).some(o => o.value === lang) ? lang : 'English';
+        if (customIn) customIn.value = customLang;
+        if (orderSel) orderSel.value = (order === 'trans_top') ? 'trans_top' : 'orig_top';
+        syncBilingualVisibility();
+      } catch (e) {}
+    }
+
+    function syncBilingualVisibility() {
+      const toggle = document.getElementById('bilingual-sub-toggle');
+      const wrap = document.getElementById('bilingual-options-wrap');
+      const langSel = document.getElementById('bilingual-lang-select');
+      const customIn = document.getElementById('bilingual-custom-lang');
+      if (wrap && toggle) {
+        wrap.style.display = toggle.checked ? 'flex' : 'none';
+      }
+      if (customIn && langSel) {
+        customIn.style.display = (toggle && toggle.checked && langSel.value === 'custom') ? 'inline-block' : 'none';
+      }
+    }
+
+    function handleBilingualToggle() {
+      syncBilingualVisibility();
+      saveBilingualPrefs();
+    }
+
+    function saveBilingualPrefs() {
+      syncBilingualVisibility();
+      try {
+        const toggle = document.getElementById('bilingual-sub-toggle');
+        const langSel = document.getElementById('bilingual-lang-select');
+        const customIn = document.getElementById('bilingual-custom-lang');
+        const orderSel = document.getElementById('bilingual-order-select');
+        if (toggle) localStorage.setItem('openscreen_bilingual_enabled', toggle.checked ? '1' : '0');
+        if (langSel) localStorage.setItem('openscreen_bilingual_lang', langSel.value);
+        if (customIn) localStorage.setItem('openscreen_bilingual_custom_lang', customIn.value.trim());
+        if (orderSel) localStorage.setItem('openscreen_bilingual_order', orderSel.value);
+      } catch (e) {}
     }
 
     function initTheme() {
@@ -1662,12 +1739,35 @@ ${p.hint}
         return;
       }
 
+      const bilingualSubs = document.getElementById('bilingual-sub-toggle') ? document.getElementById('bilingual-sub-toggle').checked : false;
+      const langSelVal = document.getElementById('bilingual-lang-select') ? document.getElementById('bilingual-lang-select').value : 'English';
+      const customLangVal = document.getElementById('bilingual-custom-lang') ? document.getElementById('bilingual-custom-lang').value.trim() : '';
+      const targetLang = (langSelVal === 'custom') ? (customLangVal || 'English') : langSelVal;
+      const bilingualOrder = document.getElementById('bilingual-order-select') ? document.getElementById('bilingual-order-select').value : 'orig_top';
+
+      if (bilingualSubs) {
+        const hasLlmKey = window.currentLlmConfig && window.currentLlmConfig.apiKey && window.currentLlmConfig.apiKey.trim();
+        if (!hasLlmKey) {
+          alert('开启「双语字幕」需要借助大模型翻译能力。请先配置并保存您的 AI 大模型 API Key！');
+          openLlmModal();
+          return;
+        }
+        if (langSelVal === 'custom' && !customLangVal) {
+          alert('请先填写自定义目标语言名称（如：泰语、阿拉伯语），或选择内置语种！');
+          return;
+        }
+      }
+
       const btn = document.getElementById('render-master-btn');
       btn.disabled = true;
       if (activeVoice === 'my_voice' || (voicesList.find(x => x.id === activeVoice) || {}).type === 'custom') {
-        btn.innerText = '🧠 专属音色本地神经推理与对齐中 (约需40~60秒)，请耐心稍候...';
+        btn.innerText = bilingualSubs
+          ? '🧠 专属音色推理 + 大模型双语翻译与压制中，请耐心稍候...'
+          : '🧠 专属音色本地神经推理与对齐中 (约需40~60秒)，请耐心稍候...';
       } else {
-        btn.innerText = '正在进行音视频精确对齐与字幕压制，请稍候...';
+        btn.innerText = bilingualSubs
+          ? `正在进行 AI 配音、大模型翻译 (${targetLang}) 与双语压制，请稍候...`
+          : '正在进行音视频精确对齐与字幕压制，请稍候...';
       }
 
       const v = parseInt(document.getElementById('rate-slider').value, 10);
@@ -1687,7 +1787,10 @@ ${p.hint}
             rate: rateStr,
             burnSubtitles: burnSubs,
             fontSize: fontSize,
-            holdLastFrame: holdLastFrame
+            holdLastFrame: holdLastFrame,
+            bilingualSubtitles: bilingualSubs,
+            targetLanguage: targetLang,
+            bilingualOrder: bilingualOrder
           })
         });
 
@@ -1697,10 +1800,31 @@ ${p.hint}
         const deck = document.getElementById('result-deck');
         const player = document.getElementById('final-playback-monitor');
         const badge = document.getElementById('result-filename-badge');
+        const biBadge = document.getElementById('result-bilingual-badge');
 
         deck.style.display = 'block';
         player.src = data.videoUrl;
         badge.innerText = data.videoName;
+
+        if (biBadge) {
+          if (data.bilingualWarning) {
+            biBadge.style.display = 'inline-flex';
+            biBadge.className = 'tag mono';
+            biBadge.style.background = 'var(--color-warning-subtle)';
+            biBadge.style.color = 'var(--color-warning)';
+            biBadge.style.borderColor = 'var(--color-warning)';
+            biBadge.innerText = '⚠ ' + data.bilingualWarning;
+          } else if (data.bilingualApplied) {
+            biBadge.style.display = 'inline-flex';
+            biBadge.className = 'tag mono tag-active';
+            biBadge.style.background = '';
+            biBadge.style.color = '';
+            biBadge.style.borderColor = '';
+            biBadge.innerText = `双语字幕 (${targetLang})`;
+          } else {
+            biBadge.style.display = 'none';
+          }
+        }
 
         document.getElementById('btn-dl-video').href = data.videoUrl;
         document.getElementById('btn-dl-video').download = data.videoName;
@@ -2186,6 +2310,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 rate = str(data.get("rate") or "+0%")
                 burn_subs = bool(data.get("burnSubtitles", True))
                 hold_last_frame = bool(data.get("holdLastFrame", True))
+                bilingual_subs = bool(data.get("bilingualSubtitles", False))
+                target_lang = str(data.get("targetLanguage") or "English").strip() or "English"
+                bilingual_order = str(data.get("bilingualOrder") or "orig_top").strip()
 
                 all_v = get_all_voices()
                 voice_entry = next((v for v in all_v if v["id"] == voice_id), all_v[0])
@@ -2194,6 +2321,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 prefix = OUTPUT_DIR / f"tutorial_{ts}"
                 audio_path = prefix.with_suffix(".mp3")
                 srt_path = prefix.with_suffix(".srt")
+                ass_path = prefix.with_suffix(".ass")
                 final_video = prefix.with_name(f"tutorial_{ts}_final.mp4")
 
                 font_size = safe_duration(data.get("fontSize"), 10.5)
@@ -2261,10 +2389,35 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                         raise RuntimeError("Edge-TTS 在线语音合成超时（超过 120 秒），请检查网络连接后重试")
 
                 # 2. 净化 SRT 格式 (确保无重号、无悬挂数字、时间戳精准)
+                bilingual_applied = False
+                bilingual_warning = ""
+                use_ass_file = False
                 if srt_path.exists():
                     raw_srt = srt_path.read_text(encoding="utf-8")
                     cleaned_srt = sanitize_srt(raw_srt)
                     srt_path.write_text(cleaned_srt, encoding="utf-8")
+
+                    # 2.5 若开启双语字幕，调用当前绑定的 AI 大模型生成双语 SRT 与分级排版 ASS
+                    if bilingual_subs and cleaned_srt.strip():
+                        bilingual_srt, bilingual_items, bi_warn = translate_srt_bilingual(
+                            cleaned_srt,
+                            target_lang=target_lang,
+                            bilingual_order=bilingual_order
+                        )
+                        bilingual_warning = bi_warn
+                        has_any_trans = any(it.get("secondary") for it in bilingual_items)
+                        if has_any_trans:
+                            srt_path.write_text(bilingual_srt, encoding="utf-8")
+                            bilingual_applied = True
+                            if burn_subs:
+                                ass_content = build_bilingual_ass(
+                                    bilingual_items,
+                                    font_name=get_subtitle_font(),
+                                    font_size=font_size,
+                                    margin_v=max(14, margin_v - 4)
+                                )
+                                ass_path.write_text(ass_content, encoding="utf-8")
+                                use_ass_file = True
 
                 # 3. 计算物理音画时长与画面末尾定格延长保底 (杜绝配音未完画面被切断)
                 actual_v_dur = get_video_duration(video_path)
@@ -2275,8 +2428,11 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     pad_dur = round(actual_a_dur - actual_v_dur + 0.5, 2)
                     v_filters.append(f"tpad=stop_mode=clone:stop_duration={pad_dur}")
 
-                # FFmpeg 压制合成 (Apple 风格紧凑黑底居中字幕)
-                if burn_subs and srt_path.exists():
+                # FFmpeg 压制合成 (双语优先使用分级排版 ASS；单语保持紧凑黑底样式)
+                if burn_subs and use_ass_file and ass_path.exists():
+                    escaped_ass = str(ass_path.resolve()).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+                    v_filters.append(f"subtitles='{escaped_ass}'")
+                elif burn_subs and srt_path.exists():
                     escaped_srt = str(srt_path.resolve()).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
                     sub_font = get_subtitle_font()
                     sub_filter = (
@@ -2328,12 +2484,14 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     "videoUrl": f"/media?path={urllib.parse.quote(str(final_video))}",
                     "videoName": final_video.name,
                     "audioUrl": f"/media?path={urllib.parse.quote(str(audio_path))}",
-                    "srtUrl": f"/media?path={urllib.parse.quote(str(srt_path))}"
+                    "srtUrl": f"/media?path={urllib.parse.quote(str(srt_path))}",
+                    "bilingualApplied": bilingual_applied,
+                    "bilingualWarning": bilingual_warning
                 }
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(json.dumps(resp).encode("utf-8"))
+                self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
                 return
             else:
                 self.send_error(404, "Endpoint Not Found")
