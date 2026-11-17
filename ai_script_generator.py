@@ -17,6 +17,7 @@ import math
 import os
 import re
 import subprocess
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -988,11 +989,10 @@ def parse_srt_blocks(srt_text: str) -> list:
     return items
 
 def _extract_json_dict(raw_text: str) -> dict:
-    """从大模型返回文本中健壮抽取 JSON 映射字典（兼容 Markdown 代码块或前后说明）"""
+    """从大模型返回文本中健壮抽取 JSON 映射字典（兼容 Markdown 代码块、尾随逗号及半截截断 JSON）"""
     text = str(raw_text or "").strip()
     if not text:
         return {}
-    # 优先直接解析或提取最外层 {}
     candidates = [text]
     m_code = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text, re.IGNORECASE)
     if m_code:
@@ -1003,13 +1003,22 @@ def _extract_json_dict(raw_text: str) -> dict:
         candidates.append(text[first_brace:last_brace + 1])
 
     for cand in candidates:
+        for variant in (cand, re.sub(r',\s*\}', '}', cand)):
+            try:
+                obj = json.loads(variant)
+                if isinstance(obj, dict):
+                    return {str(k).strip(): str(v).strip() for k, v in obj.items() if v is not None}
+            except Exception:
+                continue
+
+    # 兜底：若输出在尾部被截断，正则回收已完整生成的 "index": "value" 条目
+    recovered = {}
+    for k, raw_val in re.findall(r'"(\d+)"\s*:\s*"((?:\\.|[^"\\])*)"', text):
         try:
-            obj = json.loads(cand)
-            if isinstance(obj, dict):
-                return {str(k).strip(): str(v).strip() for k, v in obj.items() if v is not None}
+            recovered[k.strip()] = json.loads(f'"{raw_val}"').strip()
         except Exception:
-            continue
-    return {}
+            recovered[k.strip()] = raw_val.strip()
+    return recovered
 
 def translate_srt_bilingual(
     srt_text: str,
@@ -1018,7 +1027,8 @@ def translate_srt_bilingual(
     api_config: dict = None
 ) -> tuple:
     """
-    基于当前绑定的 AI 大模型，将单语 SRT 字幕按上下文一次性批量翻译为双语对照字幕。
+    基于当前绑定的 AI 大模型，将单语 SRT 字幕分段批量翻译为双语对照字幕。
+    采用中小批次 + 截断/缺键自动拆分补翻策略，降低推理模型超时与漏翻风险。
     返回: (bilingual_srt_text, bilingual_items, warning_msg)
     """
     items = parse_srt_blocks(srt_text)
@@ -1041,42 +1051,57 @@ def translate_srt_bilingual(
     )
 
     translations = {}
-    chunk_size = 25
-    failed_chunks = 0
     last_err = ""
 
-    for start in range(0, len(items), chunk_size):
-        chunk = items[start:start + chunk_size]
-        payload_dict = {str(it["index"]): it["text"] for it in chunk}
+    def _call_batch(batch_items: list, max_tokens: int, timeout: int) -> tuple:
+        payload_dict = {str(it["index"]): it["text"] for it in batch_items}
         user_prompt = (
-            f"请将以下 {len(chunk)} 条软件教程字幕结合上下文翻译为【{lang_label}】，并严格以 JSON 对象格式返回：\n"
+            f"请将以下 {len(batch_items)} 条软件教程字幕结合上下文翻译为【{lang_label}】，并严格以 JSON 对象格式返回：\n"
             f"{json.dumps(payload_dict, ensure_ascii=False, indent=2)}"
         )
+        raw_res, err = call_llm_api(
+            user_prompt,
+            sys_prompt,
+            cfg,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            temperature=0.2
+        )
+        if raw_res:
+            parsed = _extract_json_dict(raw_res)
+            if parsed:
+                return parsed, ""
+            return {}, "模型未返回有效 JSON 译文结构"
+        return {}, (err or "大模型调用失败")
 
-        # 失败时轻量重试 1 次（应对推理模型偶发截断或 JSON 格式瑕疵）
-        parsed_map = {}
-        for attempt in range(2):
-            cur_tokens = 3072 if attempt == 0 else 4096
-            raw_res, err = call_llm_api(
-                user_prompt,
-                sys_prompt,
-                cfg,
-                max_tokens=cur_tokens,
-                timeout=60,
-                temperature=0.2
-            )
-            if raw_res:
-                parsed_map = _extract_json_dict(raw_res)
-                if parsed_map:
-                    break
-                last_err = "模型未返回有效 JSON 译文结构"
-            else:
-                last_err = err or "大模型调用失败"
+    def _translate_with_split(batch_items: list, depth: int = 0):
+        nonlocal last_err
+        if not batch_items:
+            return
+        max_tok = 4096 if len(batch_items) > 4 else 2048
+        parsed, err = _call_batch(batch_items, max_tokens=max_tok, timeout=75)
+        if not parsed:
+            time.sleep(0.8)
+            parsed, err = _call_batch(batch_items, max_tokens=max_tok, timeout=75)
+        if parsed:
+            for k, v in parsed.items():
+                if v and not translations.get(k):
+                    translations[k] = v
+        elif err:
+            last_err = err
 
-        if not parsed_map:
-            failed_chunks += 1
-        else:
-            translations.update(parsed_map)
+        missing = [it for it in batch_items if not translations.get(str(it["index"]))]
+        if not missing or depth >= 2:
+            return
+
+        # 整批失败或有漏翻条目时自动拆细补翻，避免单个批次拖垮大段字幕
+        sub_size = 4 if len(missing) > 4 else 1
+        for s in range(0, len(missing), sub_size):
+            _translate_with_split(missing[s:s + sub_size], depth=depth + 1)
+
+    chunk_size = 10
+    for start in range(0, len(items), chunk_size):
+        _translate_with_split(items[start:start + chunk_size], depth=0)
 
     bilingual_items = []
     srt_blocks = []
@@ -1112,7 +1137,7 @@ def translate_srt_bilingual(
     warning_msg = ""
     if translated_count == 0:
         warning_msg = f"双语翻译未成功 ({last_err})，已安全回退为单语字幕"
-    elif translated_count < len(items) or failed_chunks > 0:
+    elif translated_count < len(items):
         warning_msg = f"部分字幕翻译缺失 ({translated_count}/{len(items)} 条已译)，其余条目已保留原文"
 
     return bilingual_srt, bilingual_items, warning_msg

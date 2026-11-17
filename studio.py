@@ -413,7 +413,7 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
     <div style="max-width: 1400px; margin: 0 auto; padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
       <div style="display: flex; align-items: center; gap: 8px;">
         <span style="font-weight: 700; font-size: 13px; letter-spacing: 0.5px; color: var(--text-primary);">OPENSCREEN STUDIO</span>
-        <span class="tag mono" style="font-size: 10px; color: var(--text-muted);">v2.0</span>
+        <span class="tag mono" style="font-size: 10px; color: var(--text-muted);">V2.1</span>
       </div>
       <div style="display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--text-muted);">
         <button class="btn btn-sm" id="theme-toggle-btn" onclick="toggleTheme()" style="gap: 5px;">
@@ -1175,10 +1175,6 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
 
       document.getElementById('duration-target-pill').innerText = `视频时长: ${activeDuration.toFixed(1)}s (预算约 ${Math.round(activeDuration * 4.3)} 字)`;
 
-      const textVal = document.getElementById('script-textarea').value.trim();
-      if (!textVal) {
-        document.getElementById('script-textarea').value = "在左侧菜单点击进入【工单管理】，点击右上角新建工单，填写客户报修设备与故障现象，指派给责任工程师并确认提交。";
-      }
       handleScriptInput();
     }
 

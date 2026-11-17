@@ -1,6 +1,6 @@
-# 🎬 OpenScreen Studio v2.0 · 软件教程自动化视频工作台
+# 🎬 OpenScreen Studio V2.1 · 软件教程自动化视频工作台
 
-[![Version](https://img.shields.io/badge/Version-v2.0-indigo.svg)]()
+[![Version](https://img.shields.io/badge/Version-V2.1-indigo.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Author](https://img.shields.io/badge/Author-杨冉-orange.svg)](https://github.com/a916791360)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-brightgreen.svg)](https://www.python.org/)
