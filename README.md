@@ -1,12 +1,13 @@
-# 🎬 OpenScreen Studio · 软件教程自动化视频工作台
+# 🎬 OpenScreen Studio v2.0 · 软件教程自动化视频工作台
 
+[![Version](https://img.shields.io/badge/Version-v2.0-indigo.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Author](https://img.shields.io/badge/Author-杨冉-orange.svg)](https://github.com/a916791360)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-brightgreen.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey.svg)]()
 
-> **“录屏动效自动卡点，AI 大模型严控时长，免 Key 主持人级配音，一键音画字幕秒级出片。”**  
-> 专为制作高质量 SaaS 功能演示、后台系统操作教程、产品更新讲解打造的现代化工作台。
+> **“录屏动效自动卡点，AI 大模型严控时长，免 Key 主持人级配音，一键双语字幕秒级出片。”**  
+> 专为制作高质量 SaaS 功能演示、出海多语言操作教程、产品更新讲解打造的现代化工作台。
 
 ---
 
@@ -32,11 +33,12 @@
 3. **后期剪辑费时**：手动对轴、卡点字幕、分段剪辑极其消耗精力。
 
 **OpenScreen Studio + OpenScreen** 组合拳彻底解决这一流程：
-- 📸 **录制端（OpenScreen）**：自动捕捉鼠标轨迹，生成专业级平滑镜头缩放、圆角阴影与弹簧光标动效。
-- 🧠 **编导端（OpenScreen Studio）**：自动读取录屏工程的**镜头特写与点击交互节拍**，根据视频物理秒数，由大模型（DeepSeek / OpenAI / 智谱等）按分镜**严卡字数预算**，自动撰写音画严密卡点的解说词。
+- 📸 **录制端（OpenScreen）**：自动捕捉鼠标轨迹，生成专业级平滑镜头缩放、圆角阴影与弹簧光标动效（支持剪辑裁剪 `trimRegions` 时间轴自动校准）。
+- 🧠 **编导端（OpenScreen Studio）**：自动读取录屏工程的**镜头特写与点击交互节拍**，根据视频物理秒数，由大模型（全面兼容 DeepSeek / OpenAI / 智谱 `glm-5.3-flash` 等推理 CoT 模型）按分镜精准润色音画卡点解说词。
+- 🌐 **双语字幕引擎（v2.0 新增）**：直接复用已绑定的 AI 大模型，先产出精确时间轴再做上下文整篇连贯翻译（支持英语 / 日语 / 韩语 / 繁中 / 西 / 法 / 德及任意自定义语种），自动以 **ASS 统一整块透明暗底、主大副小无描边美学排版** 烧录画面，同时支持下载标准双语 `.srt`。
 - 🎙️ **合成端（双轨音频架构）**：
   - **开箱即用标准音色**：内置微软 Edge-TTS 广播级自然语音（晓晓、云希、云健等），**完全免费、免 API Key、秒级生成**。
-  - **私有专属音色克隆**：支持团队每位同事 **1:1 录入并克隆自己的真实声线**（搭载 F5-TTS 零样本扩散模型 + 广播级母带人声增强链 + 原生时间轴对齐技术，杜绝传统语音识别同音错字，字幕与文案 100% 吻合），一键压制 Apple 风格黑底居中字幕，导出成品 MP4！
+  - **私有专属音色克隆**：支持团队每位同事 **1:1 录入并克隆自己的真实声线**（搭载 F5-TTS 零样本扩散模型 + 广播级母带人声增强链 + 原生时间轴对齐技术，杜绝传统语音识别同音错字，字幕与文案 100% 吻合），一键导出成品 MP4！
 
 ---
 
@@ -165,8 +167,8 @@ start.bat
 2. **选择**：刷新工作台左下角「录屏媒体库」，系统会自动**秒级匹配**到对应的 OpenScreen 运镜底稿与遥测节拍。
 3. **输入要点**：在右侧大文本框输入粗略的操作要点（如：`进入工单管理，新建工单，输入故障现象，指定给张工并提交`）。
 4. **智能拟合**：点击上方 **「智能拟合分镜文案」**。AI 会根据特写聚焦、主操作区等时间节拍，严格将字数限制在对应秒数内，生成卡点分镜解说。
-5. **试听与调整**：在左下角选择心仪的配音员（标准音色或你的专属原声），点击微标试听；微调语速基准。
-6. **一键出片**：点击底部 **「导出成片 (渲染视频 + AI配音 + 同步字幕)」**，系统自动进行音视频合成与字幕压制，提供一键下载与即时播放！
+5. **试听与调整**：在左下角选择心仪的配音员（标准音色或你的专属原声），点击微标试听；按需勾选 **「双语字幕」** 并选择目标语言（如英语）与上下排布顺序。
+6. **一键出片**：点击底部 **「导出成片 (渲染视频 + AI配音 + 同步字幕)」**，系统自动完成配音、上下文翻译与 ASS/SRT 双语压制，支持即时播放与 MP4/MP3/SRT 一键下载！
 
 ---
 
@@ -175,15 +177,13 @@ start.bat
 ```text
 openscreen-studio/
 ├── studio.py                   # 工作台核心多线程服务与 Range-streaming 播放器
-├── ai_script_generator.py      # OpenScreen 遥测节拍解析器与大模型时长约束编导引擎
+├── ai_script_generator.py      # OpenScreen 遥测节拍解析、大模型编导与双语 ASS/SRT 字幕引擎
 ├── custom_voice_tts.py         # 专属音色克隆引擎 (F5-TTS 扩散推理 + 原生字轨对齐 + 广播母带链)
 ├── requirements-voice.txt      # 专属声音克隆扩展依赖清单 (可选)
 ├── generate_tutorial_audio.py  # 独立命令行音频/字幕生成器 (基于 Edge-TTS)
 ├── custom_voice/               # 👥 团队专属音色库目录
 │   ├── README.md               # 专属音色录入详细指南
-│   ├── voices.json             # 音色注册表 (动态加载，支持多人多音色)
-│   └── ref_clip_engineer.wav   # 预置参考音色范例
-├── tokens.css                  # Linear / Raycast 级工业质感设计系统变量
+│   └── voices.example.json     # 音色注册表模板 (本地登记为 voices.json，隐私数据不上传)
 ├── sample_tutorial.txt         # 示范台词样本
 ├── requirements.txt            # Python 基础核心依赖
 ├── start.sh                    # macOS / Linux 一键极速启动脚本
