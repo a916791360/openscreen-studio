@@ -1162,8 +1162,8 @@ def build_bilingual_ass(
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Default,{safe_font},{main_fs},&H00FFFFFF,&H00FFFFFF,&H40000000,&H85000000,"
-        f"0,0,0,0,100,100,0,0,1,1.3,0.7,2,14,14,{safe_margin_v},1\n\n"
+        f"Style: Default,{safe_font},{main_fs},&H00FFFFFF,&H00FFFFFF,&H72000000,&H72000000,"
+        f"0,0,0,0,100,100,0,0,3,1.6,0,2,14,14,{safe_margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
