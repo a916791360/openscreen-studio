@@ -80,22 +80,26 @@ def format_timestamp(seconds: float) -> str:
 def split_script_into_segments(text: str):
     """
     智能将用户文案切分为适合字幕展示的单句/分镜，
-    既保留用户手动换行意图，又防止超长单行溢出屏幕。
+    既保留用户手动换行意图，又兼顾字幕单行可读性与 F5-TTS 推理合并效率。
     """
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     segments = []
     for l in lines:
-        if len(l) > 32:
-            # 依逗号或分号自然断句
+        if len(l) > 36:
+            # 依标点自然断句，避免切成十余字的碎片导致推理次数翻倍
             sub = re.split(r'([，,。；;！!？?]+)', l)
             buf = ""
             for p in sub:
                 buf += p
-                if re.match(r'[，,。；;！!？?]+', p) and len(buf) >= 12:
+                if re.match(r'[，,。；;！!？?]+', p) and len(buf) >= 20:
                     segments.append(buf.strip())
                     buf = ""
             if buf.strip():
-                segments.append(buf.strip())
+                tail = buf.strip()
+                if segments and len(tail) < 10 and len(segments[-1]) + len(tail) <= 42:
+                    segments[-1] = segments[-1] + tail
+                else:
+                    segments.append(tail)
         else:
             segments.append(l)
     return segments
@@ -128,34 +132,35 @@ def synthesize_custom_voice(text: str, output_audio: Path, output_srt: Path, spe
     target_sr = 24000
     pause_sec = 0.18  # 句间自然呼吸停顿
 
-    for idx, seg_text in enumerate(segments):
-        print(f"   [{idx + 1}/{len(segments)}] 正在生成: {seg_text[:24]}...")
-        wave, sr, _ = infer_process(
-            pre_ref_audio,
-            pre_ref_text,
-            seg_text,
-            ema_model,
-            vocoder,
-            mel_spec_type="vocos",
-            nfe_step=16,
-            speed=speed,
-            device=device
-        )
-        target_sr = sr
-        dur = len(wave) / target_sr
-        start_ts = current_time
-        end_ts = current_time + dur
+    with torch.inference_mode():
+        for idx, seg_text in enumerate(segments):
+            print(f"   [{idx + 1}/{len(segments)}] 正在生成: {seg_text[:24]}...")
+            wave, sr, _ = infer_process(
+                pre_ref_audio,
+                pre_ref_text,
+                seg_text,
+                ema_model,
+                vocoder,
+                mel_spec_type="vocos",
+                nfe_step=16,
+                speed=speed,
+                device=device
+            )
+            target_sr = sr
+            dur = len(wave) / target_sr
+            start_ts = current_time
+            end_ts = current_time + dur
 
-        # 100% 严谨使用用户原始文案，杜绝语音识别错别字！
-        srt_lines.append(
-            f"{idx + 1}\n{format_timestamp(start_ts)} --> {format_timestamp(end_ts)}\n{seg_text}\n"
-        )
+            # 100% 严谨使用用户原始文案，杜绝语音识别错别字！
+            srt_lines.append(
+                f"{idx + 1}\n{format_timestamp(start_ts)} --> {format_timestamp(end_ts)}\n{seg_text}\n"
+            )
 
-        waves.append(wave)
-        # 添加自然语句间歇
-        pause_samples = np.zeros(int(pause_sec * target_sr), dtype=wave.dtype)
-        waves.append(pause_samples)
-        current_time = end_ts + pause_sec
+            waves.append(wave)
+            # 添加自然语句间歇
+            pause_samples = np.zeros(int(pause_sec * target_sr), dtype=wave.dtype)
+            waves.append(pause_samples)
+            current_time = end_ts + pause_sec
 
     # 拼接完整波形
     final_wave = np.concatenate(waves)

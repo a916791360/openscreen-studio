@@ -2354,10 +2354,11 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                         "--ref-audio", str(ref_audio),
                         "--ref-text", ref_text
                     ]
+                    custom_tts_timeout = max(900, min(3600, 300 + int(len(script) * 0.8)))
                     try:
-                        run_res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                        run_res = subprocess.run(cmd, capture_output=True, text=True, timeout=custom_tts_timeout)
                     except subprocess.TimeoutExpired:
-                        raise RuntimeError("专属音色神经推理超时（超过 300 秒），请尝试缩短单次台词长度或切换内置标准音色")
+                        raise RuntimeError(f"专属音色神经推理超时（超过 {custom_tts_timeout} 秒），请检查运行日志或切换内置标准音色")
                     if run_res.returncode != 0:
                         err_msg = run_res.stderr.strip()
                         if "f5_tts" in err_msg or "torch" in err_msg or "No module named" in err_msg:
@@ -2468,10 +2469,11 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                         str(final_video)
                     ]
 
+                ff_timeout = max(600, min(2400, int(max(actual_v_dur, actual_a_dur) * 3.5)))
                 try:
-                    subprocess.run(ff_cmd, check=True, timeout=300)
+                    subprocess.run(ff_cmd, check=True, timeout=ff_timeout)
                 except subprocess.TimeoutExpired:
-                    raise RuntimeError("FFmpeg 视频渲染合成超时（超过 300 秒）")
+                    raise RuntimeError(f"FFmpeg 视频渲染合成超时（超过 {ff_timeout} 秒）")
 
                 resp = {
                     "success": True,
