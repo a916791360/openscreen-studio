@@ -800,12 +800,12 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
       <!-- Large Interactive Video Stage -->
       <div id="blur-modal-stage" style="flex: 1; background: #000; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; min-height: 0;">
         <div id="blur-video-box" style="position: relative; display: inline-flex; max-width: 100%; max-height: 100%; align-items: center; justify-content: center;">
-          <video id="blur-modal-video" playsinline style="max-width: 100%; max-height: calc(88vh - 155px); display: block; object-fit: contain; pointer-events: none; user-select: none;"></video>
+          <video id="blur-modal-video" playsinline style="max-width: 100%; max-height: calc(88vh - 185px); display: block; object-fit: contain; pointer-events: none; user-select: none;"></video>
           <div id="blur-modal-draw-layer" style="position: absolute; inset: 0; cursor: crosshair; z-index: 10;">
             <!-- Existing blur zones preview on current frame -->
             <div id="blur-modal-existing-layer" style="position: absolute; inset: 0; pointer-events: none;"></div>
-            <!-- Active selection box with live frosted-glass preview -->
-            <div id="blur-modal-active-box" style="display: none; position: absolute; border: 2px solid #f59e0b; background: rgba(245, 158, 11, 0.18); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: 0 0 0 1px rgba(0,0,0,0.6), 0 0 18px rgba(245,158,11,0.45); pointer-events: none;"></div>
+            <!-- Active selection box: pure borderless frosted-glass Gaussian blur preview -->
+            <div id="blur-modal-active-box" style="display: none; position: absolute; border: none; border-radius: 4px; background: rgba(255, 255, 255, 0.04); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 0 12px rgba(0, 0, 0, 0.14); pointer-events: none;"></div>
           </div>
         </div>
       </div>
@@ -1124,8 +1124,8 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
         .map((b, i) => ({ ...b, idx: i + 1 }))
         .filter(b => cur >= b.start && cur <= b.end)
         .map(b => `
-          <div style="position:absolute;left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%;border:1.5px dashed #38bdf8;background:rgba(56,189,248,0.16);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);">
-            <span class="mono" style="position:absolute;top:-16px;left:0;background:#0284c7;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;">已有 #${b.idx} (${b.start}~${b.end}s)</span>
+          <div style="position:absolute;left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%;border:none;border-radius:4px;background:rgba(255,255,255,0.03);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 0 10px rgba(0,0,0,0.12);">
+            <span class="mono" style="position:absolute;top:-16px;left:0;background:rgba(15,23,42,0.75);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;">#${b.idx} (${b.start}~${b.end}s)</span>
           </div>
         `).join('');
     }
