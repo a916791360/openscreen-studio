@@ -454,12 +454,6 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
 
         <div id="video-stage-wrap" style="background: #000; position: relative; min-height: 240px; display: flex; align-items: center; justify-content: center; outline: 1px solid var(--border-subtle); overflow: hidden;">
           <video id="stage-player" controls style="width: 100%; max-height: 320px; object-fit: contain; outline: none;"></video>
-          <div id="blur-select-overlay" style="display: none; position: absolute; inset: 0; z-index: 20; cursor: crosshair; background: rgba(15, 23, 42, 0.22);">
-            <div id="blur-select-box" style="display: none; position: absolute; border: 2px dashed #f59e0b; background: rgba(245, 158, 11, 0.25); pointer-events: none;"></div>
-            <div class="mono" style="position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.82); color: #fcd34d; font-size: 11px; padding: 4px 8px; border-radius: 4px; pointer-events: none;">
-              按住鼠标左键拖拽框选隐私打码区域（松开即添加，ESC 取消）
-            </div>
-          </div>
           <div id="drop-overlay" style="display: none; position: absolute; inset: 0; background: rgba(9,11,16,0.92); border: 2px dashed var(--color-accent); align-items: center; justify-content: center; flex-direction: column; gap: 8px;">
             <span style="font-weight: 500; font-size: 13px; color: var(--text-primary);">松开鼠标以载入视频文件</span>
           </div>
@@ -470,7 +464,7 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
             <span style="font-size: 11px; font-weight: 600; color: var(--text-secondary);">🛡️ 区间隐私高斯模糊 (人脸/邮箱脱敏)</span>
             <div style="display: flex; gap: 6px;">
-              <button class="btn btn-sm" id="btn-draw-blur" onclick="startBlurBoxDraw()" style="font-size: 10px; padding: 2px 8px;">+ 在画面框选打码</button>
+              <button class="btn btn-sm btn-primary" id="btn-draw-blur" onclick="openBlurModal()" style="font-size: 10px; padding: 2px 9px;">⛶ 放大画面精准框选</button>
               <button class="btn btn-sm" onclick="addQuickBlurZone()" style="font-size: 10px; padding: 2px 8px;">+ 手动填区间</button>
             </div>
           </div>
@@ -791,6 +785,57 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- V3.2 Fullscreen Privacy Blur Picker Modal -->
+  <div id="blur-picker-modal" style="position: fixed; inset: 0; background: rgba(5,8,15,0.86); backdrop-filter: blur(6px); display: none; z-index: 1050; align-items: center; justify-content: center; padding: 18px;">
+    <div class="card" style="width: 92vw; max-width: 1280px; height: 88vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.75); border: 1px solid var(--border-focus);">
+      <div class="card-header" style="padding: 10px 16px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-weight: 700; font-size: 13px; color: var(--text-primary);">🛡️ 高清大图隐私打码框选器</span>
+          <span class="tag mono" id="blur-modal-time-pill" style="font-size: 11px;">当前帧: 0.0s</span>
+          <span style="font-size: 11px; color: var(--text-muted);">拖动下方进度条定位画面，然后在视频上按住鼠标左键拖拽框选</span>
+        </div>
+        <button class="btn btn-sm" onclick="closeBlurModal()" style="padding: 2px 8px; font-size: 12px;">✕ 关闭</button>
+      </div>
+
+      <!-- Large Interactive Video Stage -->
+      <div id="blur-modal-stage" style="flex: 1; background: #000; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; min-height: 0;">
+        <div id="blur-video-box" style="position: relative; display: inline-flex; max-width: 100%; max-height: 100%; align-items: center; justify-content: center;">
+          <video id="blur-modal-video" playsinline style="max-width: 100%; max-height: calc(88vh - 155px); display: block; object-fit: contain; pointer-events: none; user-select: none;"></video>
+          <div id="blur-modal-draw-layer" style="position: absolute; inset: 0; cursor: crosshair; z-index: 10;">
+            <!-- Existing blur zones preview on current frame -->
+            <div id="blur-modal-existing-layer" style="position: absolute; inset: 0; pointer-events: none;"></div>
+            <!-- Active selection box with live frosted-glass preview -->
+            <div id="blur-modal-active-box" style="display: none; position: absolute; border: 2px solid #f59e0b; background: rgba(245, 158, 11, 0.18); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: 0 0 0 1px rgba(0,0,0,0.6), 0 0 18px rgba(245,158,11,0.45); pointer-events: none;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scrubber & Time Range Controls -->
+      <div style="padding: 12px 16px; background: var(--bg-header); border-top: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <button class="btn btn-sm" id="blur-modal-play-btn" onclick="toggleBlurModalPlay()" style="min-width: 58px;">▶ 播放</button>
+          <input type="range" id="blur-modal-scrubber" min="0" max="100" step="0.1" value="0" oninput="seekBlurModalVideo(this.value)" style="flex: 1; accent-color: var(--color-accent); cursor: pointer;">
+          <span class="mono" id="blur-modal-dur-text" style="font-size: 11px; color: var(--text-secondary); min-width: 96px; text-align: right;">0.0s / 0.0s</span>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+          <div class="mono" style="display: flex; align-items: center; gap: 8px; font-size: 11px; flex-wrap: wrap;">
+            <span>生效区间：</span>
+            <input type="number" id="blur-modal-start" step="0.1" value="0" style="width: 64px; background: var(--bg-well); border: 1px solid var(--border-default); color: var(--text-primary); border-radius: 5px; padding: 3px 6px; font-size: 11px;">
+            <button class="btn btn-sm" onclick="setBlurModalBound('start')" style="font-size: 10px; padding: 2px 6px;">设为当前秒</button>
+            <span>至</span>
+            <input type="number" id="blur-modal-end" step="0.1" value="10" style="width: 64px; background: var(--bg-well); border: 1px solid var(--border-default); color: var(--text-primary); border-radius: 5px; padding: 3px 6px; font-size: 11px;">
+            <button class="btn btn-sm" onclick="setBlurModalBound('end')" style="font-size: 10px; padding: 2px 6px;">设为当前秒</button>
+            <span id="blur-modal-rect-info" style="color: var(--text-muted); margin-left: 6px;">尚未框选区域（请在上方大图中拖拽画框）</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button class="btn btn-sm" onclick="clearBlurModalSelection()">重画</button>
+            <button class="btn btn-primary" id="btn-confirm-blur-modal" onclick="confirmBlurModalZone()" disabled style="opacity: 0.5; padding: 6px 14px; font-size: 12px;">✓ 确认添加此打码区间</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <audio id="voice-previewer" style="display: none;"></audio>
 
   <script>
@@ -882,18 +927,21 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
       }
     }
 
-    // ============ V3.2 区间隐私高斯模糊 ============
+    // ============ V3.2 区间隐私高斯模糊（高清大图弹窗精准框选） ============
+    let pendingBlurRect = null;
+
     function setupBlurBoxDrawing() {
-      const overlay = document.getElementById('blur-select-overlay');
-      const box = document.getElementById('blur-select-box');
-      if (!overlay || !box) return;
+      const layer = document.getElementById('blur-modal-draw-layer');
+      const box = document.getElementById('blur-modal-active-box');
+      if (!layer || !box) return;
       let drawing = false, startX = 0, startY = 0;
 
-      overlay.addEventListener('mousedown', (e) => {
-        const rect = overlay.getBoundingClientRect();
+      layer.addEventListener('mousedown', (e) => {
+        const rect = layer.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10) return;
         drawing = true;
-        startX = e.clientX - rect.left;
-        startY = e.clientY - rect.top;
+        startX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+        startY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
         box.style.display = 'block';
         box.style.left = startX + 'px';
         box.style.top = startY + 'px';
@@ -901,56 +949,201 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
         box.style.height = '0px';
       });
 
-      overlay.addEventListener('mousemove', (e) => {
+      window.addEventListener('mousemove', (e) => {
         if (!drawing) return;
-        const rect = overlay.getBoundingClientRect();
+        const rect = layer.getBoundingClientRect();
         const curX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
         const curY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
-        box.style.left = Math.min(startX, curX) + 'px';
-        box.style.top = Math.min(startY, curY) + 'px';
-        box.style.width = Math.abs(curX - startX) + 'px';
-        box.style.height = Math.abs(curY - startY) + 'px';
+        const l = Math.min(startX, curX);
+        const t = Math.min(startY, curY);
+        const w = Math.abs(curX - startX);
+        const h = Math.abs(curY - startY);
+        box.style.left = l + 'px';
+        box.style.top = t + 'px';
+        box.style.width = w + 'px';
+        box.style.height = h + 'px';
       });
 
-      overlay.addEventListener('mouseup', (e) => {
+      window.addEventListener('mouseup', () => {
         if (!drawing) return;
         drawing = false;
-        const video = document.getElementById('stage-player');
-        const vRect = video.getBoundingClientRect();
+        const rect = layer.getBoundingClientRect();
         const bRect = box.getBoundingClientRect();
-        overlay.style.display = 'none';
-        box.style.display = 'none';
-        if (bRect.width < 8 || bRect.height < 8 || vRect.width < 10) return;
-
-        // 换算为视频画面归一化坐标 (0~1)
-        const nx = Math.max(0, Math.min(0.95, (bRect.left - vRect.left) / vRect.width));
-        const ny = Math.max(0, Math.min(0.95, (bRect.top - vRect.top) / vRect.height));
-        const nw = Math.max(0.04, Math.min(1 - nx, bRect.width / vRect.width));
-        const nh = Math.max(0.04, Math.min(1 - ny, bRect.height / vRect.height));
-        const curT = video ? Number((video.currentTime || 0).toFixed(1)) : 0;
-        const endT = Number(Math.min(activeDuration || (curT + 10), curT + 10).toFixed(1));
-        privacyBlurs.push({
-          start: curT, end: endT,
-          x: Number(nx.toFixed(3)), y: Number(ny.toFixed(3)),
-          w: Number(nw.toFixed(3)), h: Number(nh.toFixed(3))
-        });
-        renderPrivacyBlurList();
+        if (bRect.width < 6 || bRect.height < 6 || rect.width < 10) {
+          clearBlurModalSelection();
+          return;
+        }
+        const nx = Math.max(0, Math.min(0.98, (bRect.left - rect.left) / rect.width));
+        const ny = Math.max(0, Math.min(0.98, (bRect.top - rect.top) / rect.height));
+        const nw = Math.max(0.02, Math.min(1 - nx, bRect.width / rect.width));
+        const nh = Math.max(0.02, Math.min(1 - ny, bRect.height / rect.height));
+        pendingBlurRect = {
+          x: Number(nx.toFixed(4)),
+          y: Number(ny.toFixed(4)),
+          w: Number(nw.toFixed(4)),
+          h: Number(nh.toFixed(4))
+        };
+        const info = document.getElementById('blur-modal-rect-info');
+        if (info) {
+          info.style.color = 'var(--color-success)';
+          info.innerText = `已框选: 左 ${Math.round(nx*100)}% · 上 ${Math.round(ny*100)}% · 宽 ${Math.round(nw*100)}% × 高 ${Math.round(nh*100)}%（可直接重画微调）`;
+        }
+        const confirmBtn = document.getElementById('btn-confirm-blur-modal');
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.style.opacity = '1';
+        }
       });
 
       document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && overlay.style.display === 'block') {
-          drawing = false;
-          overlay.style.display = 'none';
-          box.style.display = 'none';
+        const modal = document.getElementById('blur-picker-modal');
+        if (e.key === 'Escape' && modal && modal.style.display === 'flex') {
+          closeBlurModal();
         }
       });
+
+      const mv = document.getElementById('blur-modal-video');
+      if (mv) {
+        mv.addEventListener('timeupdate', () => {
+          updateBlurModalTimeUI();
+          renderBlurModalExistingBoxes();
+        });
+        mv.addEventListener('loadedmetadata', () => {
+          const sc = document.getElementById('blur-modal-scrubber');
+          if (sc && mv.duration) sc.max = mv.duration.toFixed(1);
+          updateBlurModalTimeUI();
+          renderBlurModalExistingBoxes();
+        });
+      }
     }
 
-    function startBlurBoxDraw() {
-      const video = document.getElementById('stage-player');
-      if (video && !video.paused) video.pause();
-      const overlay = document.getElementById('blur-select-overlay');
-      if (overlay) overlay.style.display = 'block';
+    function openBlurModal() {
+      const stageVid = document.getElementById('stage-player');
+      const modal = document.getElementById('blur-picker-modal');
+      const mv = document.getElementById('blur-modal-video');
+      if (!stageVid || !stageVid.src || !modal || !mv) {
+        alert('请先选择或导入视频');
+        return;
+      }
+      if (!stageVid.paused) stageVid.pause();
+      clearBlurModalSelection();
+
+      const curT = Number((stageVid.currentTime || 0).toFixed(1));
+      const dur = Number((stageVid.duration || activeDuration || 30).toFixed(1));
+      document.getElementById('blur-modal-start').value = curT;
+      document.getElementById('blur-modal-end').value = Number(Math.min(dur, curT + 10).toFixed(1));
+      const sc = document.getElementById('blur-modal-scrubber');
+      if (sc) { sc.max = dur; sc.value = curT; }
+
+      modal.style.display = 'flex';
+      if (mv.src !== stageVid.src) {
+        mv.src = stageVid.src;
+        mv.onloadeddata = () => {
+          mv.currentTime = curT;
+          updateBlurModalTimeUI();
+          renderBlurModalExistingBoxes();
+        };
+      } else {
+        mv.currentTime = curT;
+        updateBlurModalTimeUI();
+        renderBlurModalExistingBoxes();
+      }
+    }
+
+    function closeBlurModal() {
+      const modal = document.getElementById('blur-picker-modal');
+      const mv = document.getElementById('blur-modal-video');
+      if (mv && !mv.paused) mv.pause();
+      const btn = document.getElementById('blur-modal-play-btn');
+      if (btn) btn.innerText = '▶ 播放';
+      if (modal) modal.style.display = 'none';
+    }
+
+    function toggleBlurModalPlay() {
+      const mv = document.getElementById('blur-modal-video');
+      const btn = document.getElementById('blur-modal-play-btn');
+      if (!mv) return;
+      if (mv.paused) {
+        mv.play();
+        if (btn) btn.innerText = '⏸ 暂停';
+      } else {
+        mv.pause();
+        if (btn) btn.innerText = '▶ 播放';
+      }
+    }
+
+    function seekBlurModalVideo(val) {
+      const mv = document.getElementById('blur-modal-video');
+      if (mv) mv.currentTime = parseFloat(val) || 0;
+      updateBlurModalTimeUI();
+      renderBlurModalExistingBoxes();
+    }
+
+    function updateBlurModalTimeUI() {
+      const mv = document.getElementById('blur-modal-video');
+      if (!mv) return;
+      const cur = (mv.currentTime || 0).toFixed(1);
+      const dur = (mv.duration || activeDuration || 0).toFixed(1);
+      const pill = document.getElementById('blur-modal-time-pill');
+      const txt = document.getElementById('blur-modal-dur-text');
+      const sc = document.getElementById('blur-modal-scrubber');
+      if (pill) pill.innerText = `当前帧: ${cur}s`;
+      if (txt) txt.innerText = `${cur}s / ${dur}s`;
+      if (sc && !mv.paused) sc.value = cur;
+    }
+
+    function setBlurModalBound(which) {
+      const mv = document.getElementById('blur-modal-video');
+      const cur = mv ? Number((mv.currentTime || 0).toFixed(1)) : 0;
+      const el = document.getElementById(which === 'start' ? 'blur-modal-start' : 'blur-modal-end');
+      if (el) el.value = cur;
+    }
+
+    function clearBlurModalSelection() {
+      pendingBlurRect = null;
+      const box = document.getElementById('blur-modal-active-box');
+      if (box) box.style.display = 'none';
+      const info = document.getElementById('blur-modal-rect-info');
+      if (info) {
+        info.style.color = 'var(--text-muted)';
+        info.innerText = '尚未框选区域（请在上方大图中拖拽画框）';
+      }
+      const confirmBtn = document.getElementById('btn-confirm-blur-modal');
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.style.opacity = '0.5';
+      }
+    }
+
+    function renderBlurModalExistingBoxes() {
+      const wrap = document.getElementById('blur-modal-existing-layer');
+      const mv = document.getElementById('blur-modal-video');
+      if (!wrap || !mv) return;
+      const cur = mv.currentTime || 0;
+      wrap.innerHTML = privacyBlurs
+        .map((b, i) => ({ ...b, idx: i + 1 }))
+        .filter(b => cur >= b.start && cur <= b.end)
+        .map(b => `
+          <div style="position:absolute;left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%;border:1.5px dashed #38bdf8;background:rgba(56,189,248,0.16);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);">
+            <span class="mono" style="position:absolute;top:-16px;left:0;background:#0284c7;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;">已有 #${b.idx} (${b.start}~${b.end}s)</span>
+          </div>
+        `).join('');
+    }
+
+    function confirmBlurModalZone() {
+      if (!pendingBlurRect) return;
+      const st = parseFloat(document.getElementById('blur-modal-start').value) || 0;
+      let ed = parseFloat(document.getElementById('blur-modal-end').value) || (st + 5);
+      if (ed <= st) ed = Number((st + 1.0).toFixed(1));
+      privacyBlurs.push({
+        start: Number(st.toFixed(1)),
+        end: Number(ed.toFixed(1)),
+        ...pendingBlurRect
+      });
+      renderPrivacyBlurList();
+      clearBlurModalSelection();
+      renderBlurModalExistingBoxes();
+      closeBlurModal();
     }
 
     function addQuickBlurZone() {
