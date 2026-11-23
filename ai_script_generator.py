@@ -851,17 +851,76 @@ def extract_openscreen_beats(video_path: Path, override_proj: str = None):
     beats.sort(key=lambda x: x["start"])
     return beats
 
-def analyze_telemetry_phases(beats: list, total_duration: float) -> list:
+def detect_visual_scene_changes(video_path: Path, threshold: float = 0.24, min_gap: float = 3.5) -> list:
     """
-    根据 OpenScreen 遥测节拍，将整段视频智能聚类划分为 3~6 个连贯的导演分镜阶段 (Phases)
+    【V3.2 视觉场景切换检测】使用 FFmpeg 轻量级抽帧扫描画面大幅跳变（如路由页面切换、全屏弹窗打开/关闭）。
+    即使 OpenScreen 录屏时没有手动打 Zoom 特写，也能自动识别跨页切换节点，杜绝跨页串词。
+    """
+    vp = Path(video_path)
+    if not vp.exists() or not shutil.which("ffmpeg"):
+        return []
+    try:
+        # 降采样至 320px 宽 + 2fps 快速扫描，2 分钟视频仅需 ~1.5 秒
+        cmd = [
+            "ffmpeg", "-hide_banner", "-i", str(vp),
+            "-vf", f"fps=2,scale=320:-1,select='gt(scene,{threshold})',showinfo",
+            "-f", "null", "-"
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+        raw_times = []
+        for line in res.stderr.splitlines():
+            if "pts_time:" in line:
+                m = re.search(r"pts_time:\s*([0-9]+(?:\.[0-9]+)?)", line)
+                if m:
+                    t = float(m.group(1))
+                    if t >= 2.0:
+                        raw_times.append(t)
+        # 去重合并过近的场景跳变
+        filtered = []
+        for t in sorted(raw_times):
+            if not filtered or (t - filtered[-1]) >= min_gap:
+                filtered.append(round(t, 1))
+        return filtered
+    except Exception:
+        return []
+
+
+def analyze_telemetry_phases(beats: list, total_duration: float, video_path: Path = None) -> list:
+    """
+    【V3.2 运镜 + 视觉突变融合分镜引擎】
+    根据 OpenScreen 遥测节拍 + FFmpeg 视觉页面切换检测，将视频智能划分为连贯的导演分镜阶段 (Phases)。
     每个阶段包含起始时间、时长、运镜类型、视觉聚焦提示以及严格的字数预算。
     """
     dur = max(5.0, safe_duration(total_duration, 42.5))
     zooms = [b for b in beats if b.get('type') == 'zoom']
     clicks = [b for b in beats if b.get('type') == 'click']
+    scene_cuts = detect_visual_scene_changes(video_path) if video_path else []
 
     if not zooms:
-        # 无镜头缩放数据时，生成通用 3-4 分镜
+        # 无镜头缩放数据时，若检测到视觉页面切换，优先按视觉切换点切分分镜
+        valid_cuts = [t for t in scene_cuts if 2.5 <= t <= dur - 2.5]
+        if valid_cuts:
+            pts = [0.0] + valid_cuts + [round(dur, 1)]
+            phases = []
+            for idx in range(len(pts) - 1):
+                st, ed = round(pts[idx], 1), round(pts[idx + 1], 1)
+                if ed - st < 1.2:
+                    continue
+                is_first = (idx == 0)
+                is_last = (idx == len(pts) - 2)
+                p_type = 'intro' if is_first else ('outro' if is_last else 'scene')
+                p_label = '开场引入' if is_first else ('结果展示与收尾' if is_last else '画面切换 · 新场景')
+                p_hint = '开门见山点出本期操作任务' if is_first else ('展示最终执行结果并收尾' if is_last else '检测到页面跳转或弹窗打开，讲解新画面操作')
+                phases.append({
+                    'start': st, 'end': ed, 'duration': round(ed - st, 1),
+                    'type': p_type, 'label': p_label, 'hint': p_hint,
+                    'char_budget': max(12, int(round((ed - st) * 4.2)))
+                })
+            if phases:
+                for idx, p in enumerate(phases):
+                    p['index'] = idx + 1
+                return phases
+        # 兜底生成通用 3-4 分镜
         if dur <= 15:
             phases = [
                 {'start': 0.0, 'end': round(dur*0.3, 1), 'duration': round(dur*0.3, 1), 'type': 'intro', 'label': '开场引入', 'hint': '开门见山点出本期操作任务与背景', 'char_budget': max(10, int(dur*0.3*3.8))},
@@ -957,6 +1016,37 @@ def analyze_telemetry_phases(beats: list, total_duration: float) -> list:
             'label': '结果展示与收尾',
             'hint': '全景视角，展示最终执行结果与状态确认'
         })
+
+    # 【V3.2 视觉场景切换自动补锚点】：对于长度 >= 7.5s 且内部发生页面/弹窗跳变的分镜，自动按画面跳变点拆细
+    if scene_cuts:
+        refined = []
+        for p in phases:
+            st, ed = float(p['start']), float(p['end'])
+            if ed - st < 7.5:
+                refined.append(p)
+                continue
+            inner_cuts = [t for t in scene_cuts if (st + 3.0) <= t <= (ed - 3.0)]
+            if not inner_cuts:
+                refined.append(p)
+                continue
+            sub_pts = [st] + inner_cuts + [ed]
+            for s_i in range(len(sub_pts) - 1):
+                s0, s1 = round(sub_pts[s_i], 1), round(sub_pts[s_i + 1], 1)
+                if s1 - s0 < 1.5:
+                    continue
+                if s_i == 0:
+                    refined.append({
+                        **p,
+                        'start': s0, 'end': s1, 'duration': round(s1 - s0, 1)
+                    })
+                else:
+                    refined.append({
+                        'start': s0, 'end': s1, 'duration': round(s1 - s0, 1),
+                        'type': 'scene',
+                        'label': '画面切换 · 自动补锚点',
+                        'hint': '检测到页面跳转或全屏弹窗切换，自动切分防止跨页串词'
+                    })
+        phases = refined
 
     # 为每个阶段计算字数预算（黄金语速 4.2 字/秒）与序号
     for idx, p in enumerate(phases):
@@ -1207,6 +1297,7 @@ def align_tts_to_phases(
 
         out_pcm = array.array("h")
         new_srt_blocks = []
+        phase_metrics = []
         cursor_sec = 0.0
 
         for p_idx, (w_start, w_end) in enumerate(windows):
@@ -1237,20 +1328,25 @@ def align_tts_to_phases(
             # 硬锚定分镜起点：若当前音频游标早于分镜物理起点 w_start，插入静音等待画面！
             first_cue_anchor = cue_anchors.get(g_cues[0]["index"])
             target_p_start = float(first_cue_anchor) if first_cue_anchor is not None else float(w_start)
+            waited_sec = 0.0
             if target_p_start > cursor_sec + 0.02:
+                waited_sec = round(target_p_start - cursor_sec, 2)
                 pad_samples = int(round((target_p_start - cursor_sec) * sr))
                 out_pcm.extend([0] * pad_samples)
                 cursor_sec = len(out_pcm) / float(sr)
 
+            p_actual_start = round(cursor_sec, 2)
             raw_speech_dur = sum(len(s) / float(sr) for s in slices)
             min_gaps_dur = sum(base_gaps)
             avail_window = max(0.8, float(w_end) - cursor_sec - 0.10)
+            applied_speed = 1.0
 
             # 若该分镜总语音超过可用时间窗，对该分镜内各句做轻量无损加速 (1.02x ~ 1.26x)
             if raw_speech_dur + min_gaps_dur > avail_window + 0.15:
                 need_spd = (raw_speech_dur) / max(0.5, avail_window - min_gaps_dur * 0.75)
                 spd = min(1.26, max(1.0, need_spd))
                 if spd > 1.02:
+                    applied_speed = round(spd, 2)
                     slices = [_stretch_slice(s, spd, f"p{p_idx}_{k}") for k, s in enumerate(slices)]
                     base_gaps = [g * 0.8 for g in base_gaps]
                     raw_speech_dur = sum(len(s) / float(sr) for s in slices)
@@ -1296,6 +1392,18 @@ def align_tts_to_phases(
                     out_pcm.extend([0] * gap_samples)
                     cursor_sec = len(out_pcm) / float(sr)
 
+            phase_metrics.append({
+                "phase": p_idx + 1,
+                "window_start": round(float(w_start), 1),
+                "window_end": round(float(w_end), 1),
+                "actual_start": p_actual_start,
+                "actual_end": round(cursor_sec, 2),
+                "waited_sec": waited_sec,
+                "speed": applied_speed,
+                "warn": applied_speed >= 1.15,
+                "sample_text": g_cues[0]["text"][:28]
+            })
+
         # 导出对齐后的音频与 SRT
         aligned_wav = tmp_dir / "aligned.wav"
         with wave.open(str(aligned_wav), "wb") as wf:
@@ -1315,7 +1423,8 @@ def align_tts_to_phases(
             "aligned": True,
             "cues_count": len(new_srt_blocks),
             "phases_count": len(windows),
-            "final_audio_duration": round(len(out_pcm) / float(sr), 2)
+            "final_audio_duration": round(len(out_pcm) / float(sr), 2),
+            "phase_metrics": phase_metrics
         }
     except Exception as e:
         return {"aligned": False, "reason": str(e)}
@@ -1548,3 +1657,91 @@ def build_bilingual_ass(
         events.append(f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{line_text}")
 
     return header + "\n".join(events) + "\n"
+
+
+def generate_sync_check_grid(
+    video_path: Path,
+    phase_metrics: list,
+    out_jpg: Path,
+    max_panels: int = 12
+) -> dict:
+    """
+    【V3.2 导出前音画同步自检九宫格】
+    在最终压制好的成片上，抽取每个分镜起点的画面帧（已自带烧录字幕），拼成一张高清巡检拼图。
+    """
+    vp = Path(video_path)
+    out_jpg = Path(out_jpg)
+    if not vp.exists() or not shutil.which("ffmpeg") or not phase_metrics:
+        return {"generated": False, "reason": "missing_inputs"}
+
+    # 若分镜超过 max_panels，均匀采样覆盖首尾
+    selected = list(phase_metrics)
+    if len(selected) > max_panels:
+        step = (len(selected) - 1) / float(max_panels - 1)
+        idxs = sorted(set(int(round(i * step)) for i in range(max_panels)))
+        selected = [selected[i] for i in idxs]
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="openscreen_grid_"))
+    try:
+        frame_files = []
+        for pm in selected:
+            ts = max(0.2, float(pm.get("actual_start", pm.get("window_start", 0.0))) + 0.6)
+            p_num = pm.get("phase", 1)
+            spd = pm.get("speed", 1.0)
+            warn = pm.get("warn", False)
+            frame_p = tmp_dir / f"p{p_num:02d}.jpg"
+            subprocess.run(
+                ["ffmpeg", "-y", "-ss", f"{ts:.2f}", "-i", str(vp), "-frames:v", "1", "-q:v", "4", str(frame_p)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15
+            )
+            if frame_p.exists():
+                m, s = divmod(int(ts), 60)
+                badge = f"P{p_num} {m:02d}:{s:02d} ({spd:.2f}x)" + (" !" if warn else "")
+                frame_files.append((frame_p, badge, warn))
+
+        if not frame_files:
+            return {"generated": False, "reason": "no_frames_extracted"}
+
+        # 优先使用 Pillow 拼图（带清晰角标），无 Pillow 时用 FFmpeg xstack/tile 兜底
+        try:
+            from PIL import Image, ImageDraw
+            cols = 3 if len(frame_files) >= 3 else len(frame_files)
+            rows = (len(frame_files) + cols - 1) // cols
+            tw, th = 640, 360
+            sheet = Image.new("RGB", (cols * tw, rows * th), (18, 20, 24))
+            draw = ImageDraw.Draw(sheet)
+            for idx, (fp, badge, warn) in enumerate(frame_files):
+                im = Image.open(fp).convert("RGB").resize((tw, th))
+                x = (idx % cols) * tw
+                y = (idx // cols) * th
+                sheet.paste(im, (x, y))
+                bg_col = (180, 45, 30) if warn else (15, 23, 42)
+                fg_col = (255, 240, 120) if warn else (74, 222, 128)
+                draw.rectangle([x + 10, y + 10, x + 220, y + 40], fill=bg_col)
+                draw.text((x + 18, y + 18), badge, fill=fg_col)
+            out_jpg.parent.mkdir(parents=True, exist_ok=True)
+            sheet.save(str(out_jpg), quality=86)
+            return {"generated": True, "path": str(out_jpg), "panels": len(frame_files)}
+        except ImportError:
+            # FFmpeg tile fallback
+            cols = 3 if len(frame_files) >= 3 else len(frame_files)
+            rows = (len(frame_files) + cols - 1) // cols
+            # 重命名为连续序列供 image2 读取
+            seq_dir = tmp_dir / "seq"
+            seq_dir.mkdir(exist_ok=True)
+            for i, (fp, _, _) in enumerate(frame_files, 1):
+                shutil.copyfile(fp, seq_dir / f"f_{i:03d}.jpg")
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", str(seq_dir / "f_%03d.jpg"),
+                    "-vf", f"scale=640:360,tile={cols}x{rows}",
+                    "-frames:v", "1", "-q:v", "3", str(out_jpg)
+                ],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=True
+            )
+            return {"generated": True, "path": str(out_jpg), "panels": len(frame_files)}
+    except Exception as e:
+        return {"generated": False, "reason": str(e)}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+

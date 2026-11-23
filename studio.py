@@ -42,6 +42,7 @@ from ai_script_generator import (
     translate_srt_bilingual,
     build_bilingual_ass,
     align_tts_to_phases,
+    generate_sync_check_grid,
     safe_duration,
     CHARS_PER_SECOND
 )
@@ -412,9 +413,12 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
   <!-- Top Tool Header -->
   <header style="background: var(--bg-header); border-bottom: 1px solid var(--border-subtle); position: sticky; top: 0; z-index: 100;">
     <div style="max-width: 1400px; margin: 0 auto; padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
-      <div style="display: flex; align-items: center; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 10px;">
         <span style="font-weight: 700; font-size: 13px; letter-spacing: 0.5px; color: var(--text-primary);">OPENSCREEN STUDIO</span>
-        <span class="tag mono" style="font-size: 10px; color: var(--text-muted);">V3.0</span>
+        <span class="tag mono tag-active" style="font-size: 10px;">V3.2</span>
+        <select id="history-project-select" onchange="loadHistoryProject(this.value)" title="一键回载历史项目快照（还原视频、文案、分镜秒数、打码区间与音色）" style="background: var(--bg-well); border: 1px solid var(--border-default); color: var(--text-primary); border-radius: 6px; padding: 3px 8px; font-size: 11px; max-width: 240px; outline: none; cursor: pointer;">
+          <option value="">📂 历史项目回载 (0)</option>
+        </select>
       </div>
       <div style="display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--text-muted);">
         <button class="btn btn-sm" id="theme-toggle-btn" onclick="toggleTheme()" style="gap: 5px;">
@@ -448,10 +452,30 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
           <input type="file" id="file-input" accept="video/mp4,video/quicktime,video/webm" style="display:none;" onchange="handleFileSelect(this.files)">
         </div>
 
-        <div style="background: #000; position: relative; min-height: 240px; display: flex; align-items: center; justify-content: center; outline: 1px solid var(--border-subtle);">
+        <div id="video-stage-wrap" style="background: #000; position: relative; min-height: 240px; display: flex; align-items: center; justify-content: center; outline: 1px solid var(--border-subtle); overflow: hidden;">
           <video id="stage-player" controls style="width: 100%; max-height: 320px; object-fit: contain; outline: none;"></video>
+          <div id="blur-select-overlay" style="display: none; position: absolute; inset: 0; z-index: 20; cursor: crosshair; background: rgba(15, 23, 42, 0.22);">
+            <div id="blur-select-box" style="display: none; position: absolute; border: 2px dashed #f59e0b; background: rgba(245, 158, 11, 0.25); pointer-events: none;"></div>
+            <div class="mono" style="position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.82); color: #fcd34d; font-size: 11px; padding: 4px 8px; border-radius: 4px; pointer-events: none;">
+              按住鼠标左键拖拽框选隐私打码区域（松开即添加，ESC 取消）
+            </div>
+          </div>
           <div id="drop-overlay" style="display: none; position: absolute; inset: 0; background: rgba(9,11,16,0.92); border: 2px dashed var(--color-accent); align-items: center; justify-content: center; flex-direction: column; gap: 8px;">
             <span style="font-weight: 500; font-size: 13px; color: var(--text-primary);">松开鼠标以载入视频文件</span>
+          </div>
+        </div>
+
+        <!-- V3.2 Privacy Blur Interval Bar -->
+        <div style="padding: 8px 14px; background: var(--bg-surface); border-top: 1px solid var(--border-subtle);">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+            <span style="font-size: 11px; font-weight: 600; color: var(--text-secondary);">🛡️ 区间隐私高斯模糊 (人脸/邮箱脱敏)</span>
+            <div style="display: flex; gap: 6px;">
+              <button class="btn btn-sm" id="btn-draw-blur" onclick="startBlurBoxDraw()" style="font-size: 10px; padding: 2px 8px;">+ 在画面框选打码</button>
+              <button class="btn btn-sm" onclick="addQuickBlurZone()" style="font-size: 10px; padding: 2px 8px;">+ 手动填区间</button>
+            </div>
+          </div>
+          <div id="privacy-blur-list" style="display: flex; flex-direction: column; gap: 4px; margin-top: 6px;">
+            <!-- Dynamic blur rules -->
           </div>
         </div>
 
@@ -644,6 +668,20 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
           </div>
         </div>
         <video id="final-playback-monitor" controls style="width: 100%; max-height: 340px; background: #000; border-radius: 8px; outline: none;"></video>
+
+        <!-- V3.2 Export Sync Self-Check Report & Verification Grid -->
+        <div id="sync-check-report" style="display: none; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-subtle);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+            <span style="font-weight: 700; font-size: 12px; color: var(--text-primary);">🔍 导出音画卡点自检报告 & 分镜九宫格</span>
+            <span id="sync-check-summary" class="tag mono tag-active" style="font-size: 10px;">全部达标</span>
+          </div>
+          <div id="sync-check-warnings" style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;"></div>
+          <div id="sync-check-grid-wrap" style="display: none;">
+            <a id="sync-check-grid-link" href="#" target="_blank" title="点击新窗口查看大图核验每一帧字幕">
+              <img id="sync-check-grid-img" src="" alt="分镜卡点自检九宫格" style="width: 100%; border-radius: 8px; border: 1px solid var(--border-default); cursor: zoom-in;">
+            </a>
+          </div>
+        </div>
       </section>
 
     </div>
@@ -772,15 +810,229 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
     let activeVoice = "xiaoxiao";
     let activeBeats = [];
     let voicesList = [];
+    let historyProjects = [];
+    let privacyBlurs = [];
 
     // 初始化
     async function initWorkbench() {
       initTheme();
       initBilingualPrefs();
       setupDragDrop();
+      setupBlurBoxDrawing();
       await loadLlmConfig();
       await loadVoices();
       await fetchRecordings();
+      await fetchHistoryProjects();
+    }
+
+    // ============ V3.2 历史项目一键回载 ============
+    async function fetchHistoryProjects() {
+      try {
+        const res = await fetch('/api/projects');
+        const data = await res.json();
+        historyProjects = data.projects || [];
+        const sel = document.getElementById('history-project-select');
+        if (!sel) return;
+        sel.innerHTML = `<option value="">📂 历史项目回载 (${historyProjects.length})</option>` +
+          historyProjects.map((p, idx) => {
+            const label = `${(p.createdAt || '').slice(5, 16)} · ${p.videoName || '未命名'} (${(p.phases || []).length}镜)`;
+            return `<option value="${idx}">${label}</option>`;
+          }).join('');
+      } catch (e) {}
+    }
+
+    async function loadHistoryProject(idxStr) {
+      if (idxStr === '') return;
+      const proj = historyProjects[parseInt(idxStr, 10)];
+      if (!proj) return;
+      if (proj.videoPath) {
+        await selectVideo(proj.videoPath, proj.videoName || '历史项目视频', true);
+      }
+      if (Array.isArray(proj.phases) && proj.phases.length > 0) {
+        window.activePhases = proj.phases;
+        renderStoryboardPhasesBar(window.activePhases, activeDuration);
+      }
+      if (proj.script) {
+        const ta = document.getElementById('script-textarea');
+        if (ta) {
+          ta.value = proj.script;
+          handleScriptInput();
+        }
+      }
+      if (proj.voiceKey) {
+        selectVoice(proj.voiceKey);
+      }
+      if (Array.isArray(proj.privacyBlurs)) {
+        privacyBlurs = JSON.parse(JSON.stringify(proj.privacyBlurs));
+        renderPrivacyBlurList();
+      }
+      if (proj.finalVideoUrl) {
+        const deck = document.getElementById('result-deck');
+        const player = document.getElementById('final-playback-monitor');
+        const badge = document.getElementById('result-filename-badge');
+        if (deck && player) {
+          deck.style.display = 'block';
+          player.src = proj.finalVideoUrl;
+          if (badge) badge.innerText = proj.videoName + ' (历史回载)';
+          document.getElementById('btn-dl-video').href = proj.finalVideoUrl;
+          document.getElementById('btn-dl-mp3').href = proj.audioUrl || '#';
+          document.getElementById('btn-dl-srt').href = proj.srtUrl || '#';
+          renderSyncCheckReport(proj.phaseMetrics || [], proj.gridUrl || '');
+        }
+      }
+    }
+
+    // ============ V3.2 区间隐私高斯模糊 ============
+    function setupBlurBoxDrawing() {
+      const overlay = document.getElementById('blur-select-overlay');
+      const box = document.getElementById('blur-select-box');
+      if (!overlay || !box) return;
+      let drawing = false, startX = 0, startY = 0;
+
+      overlay.addEventListener('mousedown', (e) => {
+        const rect = overlay.getBoundingClientRect();
+        drawing = true;
+        startX = e.clientX - rect.left;
+        startY = e.clientY - rect.top;
+        box.style.display = 'block';
+        box.style.left = startX + 'px';
+        box.style.top = startY + 'px';
+        box.style.width = '0px';
+        box.style.height = '0px';
+      });
+
+      overlay.addEventListener('mousemove', (e) => {
+        if (!drawing) return;
+        const rect = overlay.getBoundingClientRect();
+        const curX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+        const curY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+        box.style.left = Math.min(startX, curX) + 'px';
+        box.style.top = Math.min(startY, curY) + 'px';
+        box.style.width = Math.abs(curX - startX) + 'px';
+        box.style.height = Math.abs(curY - startY) + 'px';
+      });
+
+      overlay.addEventListener('mouseup', (e) => {
+        if (!drawing) return;
+        drawing = false;
+        const video = document.getElementById('stage-player');
+        const vRect = video.getBoundingClientRect();
+        const bRect = box.getBoundingClientRect();
+        overlay.style.display = 'none';
+        box.style.display = 'none';
+        if (bRect.width < 8 || bRect.height < 8 || vRect.width < 10) return;
+
+        // 换算为视频画面归一化坐标 (0~1)
+        const nx = Math.max(0, Math.min(0.95, (bRect.left - vRect.left) / vRect.width));
+        const ny = Math.max(0, Math.min(0.95, (bRect.top - vRect.top) / vRect.height));
+        const nw = Math.max(0.04, Math.min(1 - nx, bRect.width / vRect.width));
+        const nh = Math.max(0.04, Math.min(1 - ny, bRect.height / vRect.height));
+        const curT = video ? Number((video.currentTime || 0).toFixed(1)) : 0;
+        const endT = Number(Math.min(activeDuration || (curT + 10), curT + 10).toFixed(1));
+        privacyBlurs.push({
+          start: curT, end: endT,
+          x: Number(nx.toFixed(3)), y: Number(ny.toFixed(3)),
+          w: Number(nw.toFixed(3)), h: Number(nh.toFixed(3))
+        });
+        renderPrivacyBlurList();
+      });
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && overlay.style.display === 'block') {
+          drawing = false;
+          overlay.style.display = 'none';
+          box.style.display = 'none';
+        }
+      });
+    }
+
+    function startBlurBoxDraw() {
+      const video = document.getElementById('stage-player');
+      if (video && !video.paused) video.pause();
+      const overlay = document.getElementById('blur-select-overlay');
+      if (overlay) overlay.style.display = 'block';
+    }
+
+    function addQuickBlurZone() {
+      const video = document.getElementById('stage-player');
+      const curT = video ? Number((video.currentTime || 0).toFixed(1)) : 0;
+      const endT = Number(Math.min(activeDuration || (curT + 15), curT + 15).toFixed(1));
+      privacyBlurs.push({ start: curT, end: endT, x: 0.35, y: 0.25, w: 0.30, h: 0.35 });
+      renderPrivacyBlurList();
+    }
+
+    function updateBlurRule(idx, field, val) {
+      if (!privacyBlurs[idx]) return;
+      const num = parseFloat(val);
+      if (!isNaN(num)) privacyBlurs[idx][field] = num;
+    }
+
+    function removeBlurRule(idx) {
+      privacyBlurs.splice(idx, 1);
+      renderPrivacyBlurList();
+    }
+
+    function renderPrivacyBlurList() {
+      const box = document.getElementById('privacy-blur-list');
+      if (!box) return;
+      if (!privacyBlurs.length) {
+        box.innerHTML = `<div style="font-size: 10px; color: var(--text-muted);">未配置打码区间（如需对人脸或敏感信息脱敏，可点击右侧按钮在播放器上框选）</div>`;
+        return;
+      }
+      box.innerHTML = privacyBlurs.map((b, i) => `
+        <div class="mono" style="display: flex; align-items: center; gap: 6px; font-size: 10px; background: var(--bg-well); padding: 4px 8px; border-radius: 5px; border: 1px solid var(--border-subtle); flex-wrap: wrap;">
+          <span style="color: var(--color-warning); font-weight: 700;">#${i+1}</span>
+          <span>起</span><input type="number" step="0.5" value="${b.start}" onchange="updateBlurRule(${i},'start',this.value)" style="width:46px;background:var(--bg-surface);border:1px solid var(--border-default);color:var(--text-primary);border-radius:3px;padding:1px 3px;font-size:10px;">
+          <span>止</span><input type="number" step="0.5" value="${b.end}" onchange="updateBlurRule(${i},'end',this.value)" style="width:46px;background:var(--bg-surface);border:1px solid var(--border-default);color:var(--text-primary);border-radius:3px;padding:1px 3px;font-size:10px;">
+          <span style="color:var(--text-muted);">区域(${Math.round(b.x*100)}%,${Math.round(b.y*100)}% · ${Math.round(b.w*100)}×${Math.round(b.h*100)}%)</span>
+          <button class="btn btn-sm" onclick="removeBlurRule(${i})" style="margin-left:auto;padding:1px 5px;font-size:10px;color:var(--color-danger);">删</button>
+        </div>
+      `).join('');
+    }
+
+    // ============ V3.2 导出音画卡点自检报告 & 九宫格 ============
+    function renderSyncCheckReport(metrics, gridUrl) {
+      const wrap = document.getElementById('sync-check-report');
+      const sumEl = document.getElementById('sync-check-summary');
+      const warnEl = document.getElementById('sync-check-warnings');
+      const gridWrap = document.getElementById('sync-check-grid-wrap');
+      const gridImg = document.getElementById('sync-check-grid-img');
+      const gridLink = document.getElementById('sync-check-grid-link');
+      if (!wrap) return;
+      if ((!metrics || !metrics.length) && !gridUrl) {
+        wrap.style.display = 'none';
+        return;
+      }
+      wrap.style.display = 'block';
+      const warns = (metrics || []).filter(m => m.warn);
+      if (sumEl) {
+        if (warns.length > 0) {
+          sumEl.innerText = `共 ${metrics.length} 镜 · ${warns.length} 镜偏长已自动微加速 (>1.15x)`;
+          sumEl.style.background = 'var(--color-warning-subtle)';
+          sumEl.style.color = 'var(--color-warning)';
+        } else {
+          sumEl.innerText = `共 ${metrics.length} 镜 · 全部自然语速精准卡点`;
+          sumEl.style.background = '';
+          sumEl.style.color = '';
+        }
+      }
+      if (warnEl) {
+        warnEl.innerHTML = (metrics || []).map(m => {
+          const col = m.warn ? 'var(--color-warning)' : 'var(--text-secondary)';
+          const bg = m.warn ? 'var(--color-warning-subtle)' : 'var(--bg-well)';
+          const tip = m.warn ? `偏长(${m.speed}x)` : (m.waited_sec > 0.2 ? `等画面+${m.waited_sec}s` : '1.0x');
+          return `<span class="mono" style="font-size:10px;padding:2px 6px;border-radius:4px;background:${bg};color:${col};border:1px solid var(--border-subtle);" title="${m.sample_text || ''}">P${m.phase} ${m.actual_start}s · ${tip}</span>`;
+        }).join('');
+      }
+      if (gridWrap && gridImg && gridLink) {
+        if (gridUrl) {
+          gridWrap.style.display = 'block';
+          gridImg.src = gridUrl;
+          gridLink.href = gridUrl;
+        } else {
+          gridWrap.style.display = 'none';
+        }
+      }
     }
 
     function initBilingualPrefs() {
@@ -1815,7 +2067,8 @@ ${p.hint}
             targetLanguage: targetLang,
             bilingualOrder: bilingualOrder,
             phases: window.activePhases || [],
-            phaseLock: true
+            phaseLock: true,
+            privacyBlurs: privacyBlurs || []
           })
         });
 
@@ -1855,6 +2108,9 @@ ${p.hint}
         document.getElementById('btn-dl-video').download = data.videoName;
         document.getElementById('btn-dl-mp3').href = data.audioUrl;
         document.getElementById('btn-dl-srt').href = data.srtUrl;
+
+        renderSyncCheckReport(data.phaseMetrics || [], data.gridUrl || '');
+        fetchHistoryProjects();
 
         deck.scrollIntoView({ behavior: 'smooth' });
         player.play();
@@ -2019,7 +2275,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 v_path = Path(video_path)
                 beats = extract_openscreen_beats(v_path, override_proj)
                 total_dur = get_video_duration(v_path)
-                phases = analyze_telemetry_phases(beats, total_dur)
+                phases = analyze_telemetry_phases(beats, total_dur, video_path=v_path)
                 _, _, match_info = find_matching_openscreen_project(v_path, override_proj)
 
             avail_projs = list_available_openscreen_projects()
@@ -2035,6 +2291,22 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 "availableProjects": avail_projs,
                 "duration": total_dur
             }, ensure_ascii=False).encode("utf-8"))
+            return
+
+        elif path == "/api/projects":
+            projects = []
+            if OUTPUT_DIR.exists():
+                for pf in sorted(OUTPUT_DIR.glob("project_*.json"), key=os.path.getmtime, reverse=True)[:30]:
+                    try:
+                        p_data = json.loads(pf.read_text(encoding="utf-8"))
+                        p_data["id"] = pf.stem
+                        projects.append(p_data)
+                    except Exception:
+                        continue
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"projects": projects}, ensure_ascii=False).encode("utf-8"))
             return
 
         elif path == "/api/recordings":
@@ -2414,11 +2686,13 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     except subprocess.TimeoutExpired:
                         raise RuntimeError("Edge-TTS 在线语音合成超时（超过 120 秒），请检查网络连接后重试")
 
-                # 2. 净化 SRT 格式并执行【V3.0 分镜级时间轴硬锚定】，彻底消除滚雪球抢跑/延后
+                # 2. 净化 SRT 格式并执行【V3.0+ 分镜级时间轴硬锚定】，彻底消除滚雪球抢跑/延后
                 bilingual_applied = False
                 bilingual_warning = ""
                 use_ass_file = False
                 actual_v_dur = get_video_duration(video_path)
+                align_res = {}
+                req_phases = data.get("phases")
                 if srt_path.exists():
                     raw_srt = srt_path.read_text(encoding="utf-8")
                     cleaned_srt = sanitize_srt(raw_srt)
@@ -2426,11 +2700,11 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 
                     phase_lock = bool(data.get("phaseLock", True))
                     if phase_lock and cleaned_srt.strip():
-                        req_phases = data.get("phases")
                         if not isinstance(req_phases, list) or not req_phases:
                             req_phases = analyze_telemetry_phases(
                                 extract_openscreen_beats(video_path),
-                                actual_v_dur
+                                actual_v_dur,
+                                video_path=video_path
                             )
                         align_res = align_tts_to_phases(
                             audio_path=audio_path,
@@ -2468,56 +2742,112 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 actual_v_dur = get_video_duration(video_path)
                 actual_a_dur = get_video_duration(audio_path)
 
+                # 解析【V3.2 区间隐私高斯模糊】规则（归一化坐标 0~1：x, y, w, h, start, end）
+                raw_blurs = data.get("privacyBlurs") or []
+                blur_zones = []
+                if isinstance(raw_blurs, list):
+                    for bz in raw_blurs:
+                        try:
+                            b_st = max(0.0, float(bz.get("start", 0)))
+                            b_ed = max(b_st + 0.1, float(bz.get("end", actual_v_dur)))
+                            bx = max(0.0, min(0.98, float(bz.get("x", 0.3))))
+                            by = max(0.0, min(0.98, float(bz.get("y", 0.3))))
+                            bw = max(0.02, min(1.0 - bx, float(bz.get("w", 0.2))))
+                            bh = max(0.02, min(1.0 - by, float(bz.get("h", 0.2))))
+                            blur_zones.append({"start": b_st, "end": b_ed, "x": bx, "y": by, "w": bw, "h": bh})
+                        except Exception:
+                            continue
+
                 v_filters = []
                 if hold_last_frame and actual_a_dur > actual_v_dur:
                     pad_dur = round(actual_a_dur - actual_v_dur + 0.5, 2)
                     v_filters.append(f"tpad=stop_mode=clone:stop_duration={pad_dur}")
 
                 # FFmpeg 压制合成 (双语优先使用分级排版 ASS；单语保持紧凑黑底样式)
+                sub_filter_str = ""
                 if burn_subs and use_ass_file and ass_path.exists():
                     escaped_ass = str(ass_path.resolve()).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
-                    v_filters.append(f"subtitles='{escaped_ass}'")
+                    sub_filter_str = f"subtitles='{escaped_ass}'"
                 elif burn_subs and srt_path.exists():
                     escaped_srt = str(srt_path.resolve()).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
                     sub_font = get_subtitle_font()
-                    sub_filter = (
+                    sub_filter_str = (
                         f"subtitles='{escaped_srt}':force_style="
                         f"'Fontname={sub_font},FontSize={font_size},PrimaryColour=&H00FFFFFF,OutlineColour=&H75000000,"
                         f"BackColour=&H75000000,BorderStyle=3,Outline=2.5,Shadow=0,MarginV={margin_v}'"
                     )
-                    v_filters.append(sub_filter)
 
-                combined_vf = ",".join(v_filters)
-                if combined_vf:
+                if blur_zones:
+                    # 使用 filter_complex 串联任意个区间局部高斯模糊 + 字幕烧录（单次压制无损画质）
+                    fc_parts = []
+                    prev_lbl = "[0:v]"
+                    if v_filters:
+                        fc_parts.append(f"{prev_lbl}{','.join(v_filters)}[vbase]")
+                        prev_lbl = "[vbase]"
+                    for b_i, bz in enumerate(blur_zones):
+                        en = f"between(t,{bz['start']:.2f},{bz['end']:.2f})"
+                        fc_parts.append(f"{prev_lbl}split[bm{b_i}][bc{b_i}]")
+                        fc_parts.append(
+                            f"[bc{b_i}]crop=iw*{bz['w']:.4f}:ih*{bz['h']:.4f}:iw*{bz['x']:.4f}:ih*{bz['y']:.4f},gblur=sigma=24[bl{b_i}]"
+                        )
+                        next_lbl = f"[vb{b_i}]"
+                        fc_parts.append(
+                            f"[bm{b_i}][bl{b_i}]overlay=W*{bz['x']:.4f}:H*{bz['y']:.4f}:enable='{en}'{next_lbl}"
+                        )
+                        prev_lbl = next_lbl
+                    if sub_filter_str:
+                        fc_parts.append(f"{prev_lbl}{sub_filter_str}[vout]")
+                        prev_lbl = "[vout]"
                     ff_cmd = [
                         "ffmpeg", "-y",
                         "-i", str(video_path),
                         "-i", str(audio_path),
-                        "-vf", combined_vf,
+                        "-filter_complex", ";".join(fc_parts),
+                        "-map", prev_lbl,
+                        "-map", "1:a:0",
                         "-c:v", "libx264",
                         "-preset", "veryfast",
                         "-crf", "20",
                         "-c:a", "aac",
                         "-b:a", "192k",
                         "-af", "apad",
-                        "-map", "0:v:0",
-                        "-map", "1:a:0",
                         "-shortest",
                         str(final_video)
                     ]
                 else:
-                    ff_cmd = [
-                        "ffmpeg", "-y",
-                        "-i", str(video_path),
-                        "-i", str(audio_path),
-                        "-c:v", "copy",
-                        "-c:a", "aac",
-                        "-af", "apad",
-                        "-map", "0:v:0",
-                        "-map", "1:a:0",
-                        "-shortest",
-                        str(final_video)
-                    ]
+                    if sub_filter_str:
+                        v_filters.append(sub_filter_str)
+                    combined_vf = ",".join(v_filters)
+                    if combined_vf:
+                        ff_cmd = [
+                            "ffmpeg", "-y",
+                            "-i", str(video_path),
+                            "-i", str(audio_path),
+                            "-vf", combined_vf,
+                            "-c:v", "libx264",
+                            "-preset", "veryfast",
+                            "-crf", "20",
+                            "-c:a", "aac",
+                            "-b:a", "192k",
+                            "-af", "apad",
+                            "-map", "0:v:0",
+                            "-map", "1:a:0",
+                            "-shortest",
+                            str(final_video)
+                        ]
+                    else:
+                        ff_cmd = [
+                            "ffmpeg", "-y",
+                            "-i", str(video_path),
+                            "-i", str(audio_path),
+                            "-c:v", "copy",
+                            "-c:a", "aac",
+                            "-af", "apad",
+                            "-map", "0:v:0",
+                            "-map", "1:a:0",
+                            "-shortest",
+                            str(final_video)
+                        ]
 
                 ff_timeout = max(600, min(2400, int(max(actual_v_dur, actual_a_dur) * 3.5)))
                 try:
@@ -2525,12 +2855,53 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 except subprocess.TimeoutExpired:
                     raise RuntimeError(f"FFmpeg 视频渲染合成超时（超过 {ff_timeout} 秒）")
 
+                # 4. 【V3.2 导出后音画卡点自检报告 & 分镜九宫格拼图】
+                phase_metrics = align_res.get("phase_metrics") or []
+                check_grid_path = OUTPUT_DIR / f"checkgrid_{run_id}.jpg"
+                grid_url = ""
+                if phase_metrics:
+                    grid_res = generate_sync_check_grid(final_video, phase_metrics, check_grid_path)
+                    if grid_res.get("generated"):
+                        grid_url = f"/media?path={urllib.parse.quote(str(check_grid_path))}"
+
+                # 5. 【V3.2 历史项目快照持久化】便于工作台左上角一键回载复现现场
+                try:
+                    proj_snapshot = {
+                        "runId": run_id,
+                        "createdAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "videoPath": str(video_path),
+                        "videoName": video_path.name,
+                        "finalVideoPath": str(final_video),
+                        "finalVideoUrl": f"/media?path={urllib.parse.quote(str(final_video))}",
+                        "audioUrl": f"/media?path={urllib.parse.quote(str(audio_path))}",
+                        "srtUrl": f"/media?path={urllib.parse.quote(str(srt_path))}",
+                        "gridUrl": grid_url,
+                        "script": script,
+                        "voiceKey": voice_key,
+                        "rate": rate,
+                        "burnSubs": burn_subs,
+                        "bilingualSubs": bilingual_subs,
+                        "targetLang": target_lang,
+                        "bilingualOrder": bilingual_order,
+                        "phases": req_phases if isinstance(req_phases, list) else [],
+                        "privacyBlurs": blur_zones,
+                        "phaseMetrics": phase_metrics
+                    }
+                    (OUTPUT_DIR / f"project_{run_id}.json").write_text(
+                        json.dumps(proj_snapshot, ensure_ascii=False, indent=2),
+                        encoding="utf-8"
+                    )
+                except Exception:
+                    pass
+
                 resp = {
                     "success": True,
                     "videoUrl": f"/media?path={urllib.parse.quote(str(final_video))}",
                     "videoName": final_video.name,
                     "audioUrl": f"/media?path={urllib.parse.quote(str(audio_path))}",
                     "srtUrl": f"/media?path={urllib.parse.quote(str(srt_path))}",
+                    "gridUrl": grid_url,
+                    "phaseMetrics": phase_metrics,
                     "bilingualApplied": bilingual_applied,
                     "bilingualWarning": bilingual_warning
                 }
