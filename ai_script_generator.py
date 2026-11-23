@@ -12,14 +12,18 @@ SPDX-License-Identifier: MIT
   4. 保障音画严丝合缝：配音念完时画面刚好播完，杜绝视频截断或发呆
 """
 
+import array
 import json
 import math
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 import urllib.request
 import urllib.error
+import wave
 from pathlib import Path
 
 # 中文自然朗读语速（字/秒，包含字间停顿，以 Edge-TTS 神经网络男/女声为实测基准）
@@ -875,14 +879,18 @@ def analyze_telemetry_phases(beats: list, total_duration: float) -> list:
             p['index'] = idx + 1
         return phases
 
-    # 有 zoom 数据时，按镜头聚类 (相邻 2.8s 内的特写合并为一个运镜阶段)
+    # 有 zoom 数据时，按镜头聚类（控制单段合并上限 <= 12s，避免将多处独立特写糊成 30s 大包导致内部失步）
     clusters = []
     for z in sorted(zooms, key=lambda x: x['start']):
         z_start = max(0.0, float(z.get('start', 0)))
         z_end = min(dur, float(z.get('end', z_start + 2.1)))
         cx = z.get('focus', {}).get('cx', 0.5)
         cy = z.get('focus', {}).get('cy', 0.5)
-        if not clusters or z_start - clusters[-1]['end'] > 2.8:
+        if (
+            not clusters
+            or z_start - clusters[-1]['end'] > 1.8
+            or (max(clusters[-1]['end'], z_end) - clusters[-1]['start']) > 12.0
+        ):
             clusters.append({
                 'start': z_start,
                 'end': z_end,
@@ -968,8 +976,32 @@ def compress_script_to_duration(text: str, duration_sec: float, api_config: dict
     res = adapt_script_to_duration(text, duration_sec, None, api_config)
     return res.get("script", "")
 
+def parse_srt_timestamp(ts_str: str) -> float:
+    """将 SRT 时间戳 HH:MM:SS,mmm 解析为浮点秒数"""
+    m = re.match(r'^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})$', str(ts_str or '').strip())
+    if not m:
+        return 0.0
+    h, mi, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    ms = int(m.group(4).ljust(3, '0')[:3])
+    return h * 3600.0 + mi * 60.0 + s + ms / 1000.0
+
+def format_srt_timestamp(seconds: float) -> str:
+    """将浮点秒数格式化为标准 SRT 时间戳 HH:MM:SS,mmm"""
+    sec = max(0.0, float(seconds or 0.0))
+    hrs = int(sec // 3600)
+    mins = int((sec % 3600) // 60)
+    secs = int(sec % 60)
+    msecs = int(round((sec - int(sec)) * 1000))
+    if msecs >= 1000:
+        msecs -= 1000
+        secs += 1
+        if secs >= 60:
+            secs -= 60
+            mins += 1
+    return f"{hrs:02d}:{mins:02d}:{secs:02d},{msecs:03d}"
+
 def parse_srt_blocks(srt_text: str) -> list:
-    """将标准 SRT 文本解析为带序号与时间戳的条目列表"""
+    """将标准 SRT 文本解析为带序号与时间戳的条目列表（保留多行双语文本行）"""
     blocks = re.split(r'\n\s*\n', str(srt_text or '').strip())
     items = []
     for b in blocks:
@@ -978,15 +1010,317 @@ def parse_srt_blocks(srt_text: str) -> list:
         if time_idx == -1:
             continue
         time_line = lines[time_idx].replace('.', ',')
+        parts = [p.strip() for p in time_line.split('-->')]
+        start_sec = parse_srt_timestamp(parts[0]) if len(parts) >= 1 else 0.0
+        end_sec = parse_srt_timestamp(parts[1]) if len(parts) >= 2 else start_sec + 1.5
         text_lines = [l for l in lines[time_idx + 1:] if not l.isdigit()]
         text_body = " ".join(text_lines).strip()
         if text_body:
             items.append({
                 "index": len(items) + 1,
                 "time": time_line,
-                "text": text_body
+                "start": start_sec,
+                "end": max(start_sec + 0.1, end_sec),
+                "text": text_body,
+                "lines": text_lines
             })
     return items
+
+def _norm_cjk(s: str) -> str:
+    return re.sub(r'[\s\W_]+', '', str(s or ''), flags=re.UNICODE).lower()
+
+def _map_cues_to_paragraphs(cues: list, paras: list) -> list:
+    """
+    将 SRT 的各个单句条目精准归属到用户以空行分隔的各个分镜段落 (0 .. len(paras)-1)。
+    支持单语或双语 SRT（自动提取含中文行或全文比对）。
+    """
+    if not paras or not cues:
+        return [0] * len(cues)
+    m = len(paras)
+    if m == 1:
+        return [0] * len(cues)
+
+    para_norms = [_norm_cjk(p) for p in paras]
+    para_lens = [max(1, len(pn)) for pn in para_norms]
+
+    assignments = []
+    cur_p = 0
+    consumed_in_p = 0
+
+    for idx, c in enumerate(cues):
+        # 若为双语字幕，优先取包含中文字符的那一行做原文长度匹配
+        c_lines = c.get("lines") or [c.get("text", "")]
+        zh_lines = [l for l in c_lines if re.search(r'[\u4e00-\u9fff]', l)]
+        match_line = " ".join(zh_lines) if zh_lines else c.get("text", "")
+        c_norm = _norm_cjk(match_line)
+        c_len = max(1, len(c_norm))
+
+        # 判断当前 cue 是否属于 cur_p 或已进入 cur_p + 1
+        while cur_p < m - 1:
+            rem_cues = len(cues) - idx
+            rem_paras = m - 1 - cur_p
+            if rem_cues <= rem_paras:
+                cur_p += 1
+                consumed_in_p = 0
+                continue
+            # 若当前段落已消耗超过 88%，或文本直接匹配下一段开头
+            next_norm = para_norms[cur_p + 1]
+            cur_norm = para_norms[cur_p]
+            probe = c_norm[:min(8, len(c_norm))]
+            if consumed_in_p > 0 and (
+                (probe and next_norm.startswith(probe) and not cur_norm[min(len(cur_norm), consumed_in_p):].startswith(probe))
+                or (consumed_in_p >= para_lens[cur_p] * 0.92)
+            ):
+                cur_p += 1
+                consumed_in_p = 0
+            else:
+                break
+
+        assignments.append(cur_p)
+        consumed_in_p += c_len
+
+    return assignments
+
+def _coerce_phase_windows(phases: list, target_count: int, total_duration: float) -> list:
+    """将分镜时间窗列表适配到与段落数 target_count 一一对应"""
+    valid = []
+    for p in (phases or []):
+        st = float(p.get("start", 0.0))
+        ed = float(p.get("end", st + 3.0))
+        if ed > st:
+            valid.append([st, ed])
+    if not valid:
+        dur = max(5.0, float(total_duration or 60.0))
+        step = dur / max(1, target_count)
+        return [[round(i * step, 2), round((i + 1) * step, 2)] for i in range(target_count)]
+
+    # 确保首尾覆盖
+    if total_duration > valid[-1][1]:
+        valid[-1][1] = float(total_duration)
+
+    while len(valid) > target_count and len(valid) > 1:
+        # 合并最短的相邻分镜
+        min_idx = min(range(len(valid) - 1), key=lambda i: (valid[i][1] - valid[i][0]) + (valid[i + 1][1] - valid[i + 1][0]))
+        valid[min_idx] = [valid[min_idx][0], valid[min_idx + 1][1]]
+        valid.pop(min_idx + 1)
+
+    while len(valid) < target_count:
+        # 拆分最长的分镜
+        max_idx = max(range(len(valid)), key=lambda i: valid[i][1] - valid[i][0])
+        st, ed = valid[max_idx]
+        mid = round((st + ed) / 2.0, 2)
+        valid[max_idx] = [st, mid]
+        valid.insert(max_idx + 1, [mid, ed])
+
+    return valid
+
+def align_tts_to_phases(
+    audio_path: Path,
+    srt_path: Path,
+    script: str,
+    phases: list,
+    total_duration: float = 0.0,
+    cue_anchors: dict = None
+) -> dict:
+    """
+    【V3.0 分镜级闭环时间轴硬锚定引擎 (Phase-Locked Audio & Subtitle Aligner)】
+    核心能力：
+      1. 彻底消除长视频 TTS 语速偏差导致的滚雪球抢跑/滞后：将每段台词严格锚定在对应分镜的物理时间窗 [p.start, p.end]。
+      2. 自动静音等待 (Silence Padding)：若前一段配音比画面先念完，自动插入精确静音等待画面到达下一分镜起点再开口。
+      3. 单段智能微变速 (Adaptive Atempo)：若某段配音比该分镜时间窗略长，仅对该段做 1.02x~1.26x 无损变速塞入窗口，绝不挤压后续分镜。
+      4. 分镜内句间自然呼吸配速：区分句中逗号（紧凑 0.18~0.28s）与句末句号（吸收分镜内富余时间或对齐子锚点），杜绝句中卡顿与句末长留白。
+    """
+    audio_path = Path(audio_path)
+    srt_path = Path(srt_path)
+    if not audio_path.exists() or not srt_path.exists() or not shutil.which("ffmpeg"):
+        return {"aligned": False, "reason": "missing_files_or_ffmpeg"}
+
+    raw_srt = srt_path.read_text(encoding="utf-8")
+    cues = parse_srt_blocks(raw_srt)
+    if not cues:
+        return {"aligned": False, "reason": "empty_cues"}
+
+    paras = [p.strip() for p in re.split(r'\n\s*\n', str(script or '').strip()) if p.strip()]
+    if not paras:
+        paras = ["\n".join(c["text"] for c in cues)]
+
+    windows = _coerce_phase_windows(phases, len(paras), total_duration)
+    assignments = _map_cues_to_paragraphs(cues, paras)
+    cue_anchors = cue_anchors or {}
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="openscreen_align_"))
+    try:
+        src_wav = tmp_dir / "src.wav"
+        sr = 24000
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(audio_path), "-ac", "1", "-ar", str(sr), "-sample_fmt", "s16", str(src_wav)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+
+        with wave.open(str(src_wav), "rb") as wf:
+            n_frames = wf.getnframes()
+            raw_bytes = wf.readframes(n_frames)
+        pcm = array.array("h")
+        pcm.frombytes(raw_bytes)
+        total_samples = len(pcm)
+
+        def _extract_slice(st_sec: float, ed_sec: float) -> array.array:
+            i0 = max(0, min(total_samples, int(round(st_sec * sr))))
+            i1 = max(i0, min(total_samples, int(round(ed_sec * sr))))
+            sl = array.array("h", pcm[i0:i1])
+            # 寻找首尾静音边缘外扩 20ms，并用 12ms 渐入渐出消除切音爆音
+            fade = min(int(0.012 * sr), len(sl) // 4)
+            for k in range(fade):
+                gain = k / float(fade)
+                sl[k] = int(sl[k] * gain)
+                sl[-1 - k] = int(sl[-1 - k] * gain)
+            return sl
+
+        def _stretch_slice(samples: array.array, speed_ratio: float, tag: str) -> array.array:
+            if abs(speed_ratio - 1.0) < 0.02 or len(samples) < int(0.2 * sr):
+                return samples
+            spd = max(0.85, min(1.28, float(speed_ratio)))
+            in_w = tmp_dir / f"in_{tag}.wav"
+            out_w = tmp_dir / f"out_{tag}.wav"
+            with wave.open(str(in_w), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(samples.tobytes())
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(in_w), "-af", f"atempo={spd:.4f}", "-ac", "1", "-ar", str(sr), "-sample_fmt", "s16", str(out_w)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True
+            )
+            with wave.open(str(out_w), "rb") as wf:
+                out_arr = array.array("h")
+                out_arr.frombytes(wf.readframes(wf.getnframes()))
+            return out_arr
+
+        # 按段落分组 cues
+        para_groups = [[] for _ in range(len(windows))]
+        for c, p_idx in zip(cues, assignments):
+            para_groups[min(len(windows) - 1, max(0, p_idx))].append(c)
+
+        out_pcm = array.array("h")
+        new_srt_blocks = []
+        cursor_sec = 0.0
+
+        for p_idx, (w_start, w_end) in enumerate(windows):
+            g_cues = para_groups[p_idx]
+            if not g_cues:
+                continue
+
+            # 提取该分镜内所有单句的原始音频切片
+            slices = []
+            for c in g_cues:
+                sl = _extract_slice(c["start"], c["end"])
+                if len(sl) < int(0.15 * sr):
+                    sl = array.array("h", [0] * int(0.25 * sr))
+                slices.append(sl)
+
+            # 区分句中逗号停顿与句末句号停顿
+            base_gaps = []
+            is_sentence_end = []
+            for i_c, c in enumerate(g_cues[:-1]):
+                txt = c["text"].strip()
+                if txt.endswith(("。", "！", "？", ".", "!", "?")):
+                    base_gaps.append(0.28)
+                    is_sentence_end.append(True)
+                else:
+                    base_gaps.append(0.16)
+                    is_sentence_end.append(False)
+
+            # 硬锚定分镜起点：若当前音频游标早于分镜物理起点 w_start，插入静音等待画面！
+            first_cue_anchor = cue_anchors.get(g_cues[0]["index"])
+            target_p_start = float(first_cue_anchor) if first_cue_anchor is not None else float(w_start)
+            if target_p_start > cursor_sec + 0.02:
+                pad_samples = int(round((target_p_start - cursor_sec) * sr))
+                out_pcm.extend([0] * pad_samples)
+                cursor_sec = len(out_pcm) / float(sr)
+
+            raw_speech_dur = sum(len(s) / float(sr) for s in slices)
+            min_gaps_dur = sum(base_gaps)
+            avail_window = max(0.8, float(w_end) - cursor_sec - 0.10)
+
+            # 若该分镜总语音超过可用时间窗，对该分镜内各句做轻量无损加速 (1.02x ~ 1.26x)
+            if raw_speech_dur + min_gaps_dur > avail_window + 0.15:
+                need_spd = (raw_speech_dur) / max(0.5, avail_window - min_gaps_dur * 0.75)
+                spd = min(1.26, max(1.0, need_spd))
+                if spd > 1.02:
+                    slices = [_stretch_slice(s, spd, f"p{p_idx}_{k}") for k, s in enumerate(slices)]
+                    base_gaps = [g * 0.8 for g in base_gaps]
+                    raw_speech_dur = sum(len(s) / float(sr) for s in slices)
+                    min_gaps_dur = sum(base_gaps)
+
+            # 若分镜时间窗有富余且包含多个完整句子，将富余时间适度分配给句号边界（句中逗号保持紧凑不卡顿）
+            slack = avail_window - (raw_speech_dur + min_gaps_dur)
+            if slack > 0.35 and len(base_gaps) > 0:
+                sent_breaks = sum(1 for flag in is_sentence_end if flag)
+                if sent_breaks > 0:
+                    add_per_sent = min(1.35, (slack * 0.65) / sent_breaks)
+                    for g_i in range(len(base_gaps)):
+                        if is_sentence_end[g_i]:
+                            base_gaps[g_i] += add_per_sent
+                else:
+                    add_per_comma = min(0.18, (slack * 0.3) / len(base_gaps))
+                    base_gaps = [g + add_per_comma for g in base_gaps]
+
+            # 逐句写入波形并记录精确锁定后的 SRT 时间戳
+            for i_c, (c, sl) in enumerate(zip(g_cues, slices)):
+                explicit_anchor = cue_anchors.get(c["index"])
+                if explicit_anchor is not None and float(explicit_anchor) > cursor_sec + 0.02:
+                    pad_samples = int(round((float(explicit_anchor) - cursor_sec) * sr))
+                    out_pcm.extend([0] * pad_samples)
+                    cursor_sec = len(out_pcm) / float(sr)
+
+                c_start_sec = len(out_pcm) / float(sr)
+                out_pcm.extend(sl)
+                c_end_sec = len(out_pcm) / float(sr)
+                cursor_sec = c_end_sec
+
+                time_str = f"{format_srt_timestamp(c_start_sec)} --> {format_srt_timestamp(c_end_sec)}"
+                body_str = "\n".join(c.get("lines") or [c["text"]])
+                new_srt_blocks.append(f"{c['index']}\n{time_str}\n{body_str}")
+
+                if i_c < len(base_gaps):
+                    # 若下一句有显式锚点，优先让下一句锚点接管等待
+                    next_anchor = cue_anchors.get(g_cues[i_c + 1]["index"])
+                    gap_sec = base_gaps[i_c]
+                    if next_anchor is not None:
+                        gap_sec = max(0.14, min(gap_sec, float(next_anchor) - cursor_sec))
+                    gap_samples = max(int(0.10 * sr), int(round(gap_sec * sr)))
+                    out_pcm.extend([0] * gap_samples)
+                    cursor_sec = len(out_pcm) / float(sr)
+
+        # 导出对齐后的音频与 SRT
+        aligned_wav = tmp_dir / "aligned.wav"
+        with wave.open(str(aligned_wav), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(out_pcm.tobytes())
+
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(aligned_wav), "-b:a", "192k", str(audio_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+        srt_path.write_text("\n\n".join(new_srt_blocks) + "\n", encoding="utf-8")
+        return {
+            "aligned": True,
+            "cues_count": len(new_srt_blocks),
+            "phases_count": len(windows),
+            "final_audio_duration": round(len(out_pcm) / float(sr), 2)
+        }
+    except Exception as e:
+        return {"aligned": False, "reason": str(e)}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def _extract_json_dict(raw_text: str) -> dict:
     """从大模型返回文本中健壮抽取 JSON 映射字典（兼容 Markdown 代码块、尾随逗号及半截截断 JSON）"""

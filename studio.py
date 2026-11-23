@@ -41,6 +41,7 @@ from ai_script_generator import (
     compress_text_to_target,
     translate_srt_bilingual,
     build_bilingual_ass,
+    align_tts_to_phases,
     safe_duration,
     CHARS_PER_SECOND
 )
@@ -413,7 +414,7 @@ HTML_WORKBENCH = r"""<!DOCTYPE html>
     <div style="max-width: 1400px; margin: 0 auto; padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
       <div style="display: flex; align-items: center; gap: 8px;">
         <span style="font-weight: 700; font-size: 13px; letter-spacing: 0.5px; color: var(--text-primary);">OPENSCREEN STUDIO</span>
-        <span class="tag mono" style="font-size: 10px; color: var(--text-muted);">V2.1</span>
+        <span class="tag mono" style="font-size: 10px; color: var(--text-muted);">V3.0</span>
       </div>
       <div style="display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--text-muted);">
         <button class="btn btn-sm" id="theme-toggle-btn" onclick="toggleTheme()" style="gap: 5px;">
@@ -1400,7 +1401,9 @@ ${p.hint}
 台词: ${paraText || '(尚未生成)'}
 点击视频跳转至该分镜">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
-              <span style="font-weight: 700; font-size: 10px; color: var(--text-primary);">P${p.index} · ${p.start}s</span>
+              <span style="font-weight: 700; font-size: 10px; color: var(--text-primary); border-bottom: 1px dashed var(--border-default);"
+                    title="点击微调该分镜开口秒数（合成时将严格硬锚定至该时间点）"
+                    onclick="event.stopPropagation(); editPhaseStartTime(${idx})">P${p.index} · ${p.start}s ✎</span>
               <span class="${statusClass}" style="font-size: 9px; padding: 1px 4px;">${statusText}</span>
             </div>
             <div style="font-size: 9.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
@@ -1415,17 +1418,43 @@ ${p.hint}
           summaryTag.innerText = `已解析 ${phases.length} 处分镜 · 等待拟合`;
           summaryTag.className = "tag mono";
         } else if (overCount === 0 && fitCount >= phases.length) {
-          summaryTag.innerText = `${phases.length} 处分镜全对齐`;
+          summaryTag.innerText = `${phases.length} 处分镜全对齐 (时间轴硬锚定)`;
           summaryTag.className = "tag mono tag-active";
         } else if (overCount > 0) {
-          summaryTag.innerText = `${overCount} 段偏长需微调`;
+          summaryTag.innerText = `${overCount} 段偏长 (合成将自动微加速卡点)`;
           summaryTag.className = "tag mono";
-          summaryTag.style.color = "var(--color-danger)";
+          summaryTag.style.color = "var(--color-warning)";
         } else {
-          summaryTag.innerText = `已对齐 ${fitCount}/${phases.length} 分镜`;
-          summaryTag.className = "tag mono";
+          summaryTag.innerText = `已锚定 ${fitCount}/${phases.length} 分镜`;
+          summaryTag.className = "tag mono tag-active";
         }
       }
+    }
+
+    function editPhaseStartTime(idx) {
+      const phases = window.activePhases || [];
+      if (!phases[idx]) return;
+      const curStart = phases[idx].start;
+      const minStart = idx === 0 ? 0.0 : +(phases[idx - 1].start + 0.5).toFixed(1);
+      const maxStart = +(phases[idx].end - 0.5).toFixed(1);
+      const input = prompt(`微调分镜 P${phases[idx].index} 的开口起始秒数 (范围 ${minStart}s ~ ${maxStart}s)：\n合成时配音将严格锚定在此秒数准时开口。`, curStart);
+      if (input === null) return;
+      const val = parseFloat(input);
+      if (isNaN(val) || val < minStart || val > maxStart) {
+        alert(`请输入 ${minStart} 到 ${maxStart} 之间的有效秒数`);
+        return;
+      }
+      const newStart = +val.toFixed(1);
+      phases[idx].start = newStart;
+      phases[idx].duration = +(phases[idx].end - newStart).toFixed(1);
+      phases[idx].char_budget = Math.max(10, Math.round(phases[idx].duration * 4.2));
+      if (idx > 0) {
+        phases[idx - 1].end = newStart;
+        phases[idx - 1].duration = +(newStart - phases[idx - 1].start).toFixed(1);
+        phases[idx - 1].char_budget = Math.max(10, Math.round(phases[idx - 1].duration * 4.2));
+      }
+      updateStoryboardMonitor();
+      seekToPhase(phases[idx].index, newStart);
     }
 
     function updateSpeedMeter(val) {
@@ -1784,7 +1813,9 @@ ${p.hint}
             holdLastFrame: holdLastFrame,
             bilingualSubtitles: bilingualSubs,
             targetLanguage: targetLang,
-            bilingualOrder: bilingualOrder
+            bilingualOrder: bilingualOrder,
+            phases: window.activePhases || [],
+            phaseLock: true
           })
         });
 
@@ -2383,14 +2414,33 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     except subprocess.TimeoutExpired:
                         raise RuntimeError("Edge-TTS 在线语音合成超时（超过 120 秒），请检查网络连接后重试")
 
-                # 2. 净化 SRT 格式 (确保无重号、无悬挂数字、时间戳精准)
+                # 2. 净化 SRT 格式并执行【V3.0 分镜级时间轴硬锚定】，彻底消除滚雪球抢跑/延后
                 bilingual_applied = False
                 bilingual_warning = ""
                 use_ass_file = False
+                actual_v_dur = get_video_duration(video_path)
                 if srt_path.exists():
                     raw_srt = srt_path.read_text(encoding="utf-8")
                     cleaned_srt = sanitize_srt(raw_srt)
                     srt_path.write_text(cleaned_srt, encoding="utf-8")
+
+                    phase_lock = bool(data.get("phaseLock", True))
+                    if phase_lock and cleaned_srt.strip():
+                        req_phases = data.get("phases")
+                        if not isinstance(req_phases, list) or not req_phases:
+                            req_phases = analyze_telemetry_phases(
+                                extract_openscreen_beats(video_path),
+                                actual_v_dur
+                            )
+                        align_res = align_tts_to_phases(
+                            audio_path=audio_path,
+                            srt_path=srt_path,
+                            script=script,
+                            phases=req_phases,
+                            total_duration=actual_v_dur
+                        )
+                        if align_res.get("aligned"):
+                            cleaned_srt = srt_path.read_text(encoding="utf-8")
 
                     # 2.5 若开启双语字幕，调用当前绑定的 AI 大模型生成双语 SRT 与分级排版 ASS
                     if bilingual_subs and cleaned_srt.strip():
