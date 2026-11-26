@@ -77,6 +77,56 @@ def format_timestamp(seconds: float) -> str:
     msecs = int(round((seconds - int(seconds)) * 1000))
     return f"{hrs:02d}:{mins:02d}:{secs:02d},{msecs:03d}"
 
+def _int_to_cn(n: int) -> str:
+    """将 0~9999 整数转为自然中文读法（如 11->十一, 25->二十五）"""
+    digits = "零一二三四五六七八九"
+    if n < 0:
+        return "负" + _int_to_cn(-n)
+    if n < 10:
+        return digits[n]
+    if n < 20:
+        return "十" + ("" if n == 10 else digits[n % 10])
+    if n < 100:
+        tens, ones = divmod(n, 10)
+        return digits[tens] + "十" + ("" if ones == 0 else digits[ones])
+    if n < 1000:
+        h, rem = divmod(n, 100)
+        if rem == 0:
+            return digits[h] + "百"
+        if rem < 10:
+            return digits[h] + "百零" + digits[rem]
+        if rem < 20:
+            return digits[h] + "百一" + _int_to_cn(rem)
+        return digits[h] + "百" + _int_to_cn(rem)
+    return "".join(digits[int(ch)] for ch in str(n))
+
+
+def normalize_text_for_tts(seg_text: str) -> str:
+    """
+    【V3.2 防日期/数字误读成英文】
+    F5-TTS 遇到中文句中的阿拉伯数字（尤其是 "11 月 25 日"、"3 个"、"100%" 等）容易切换为英文发音。
+    仅在喂给模型发声前转为中文读法，SRT 字幕仍保留原始优雅排版文本。
+    """
+    s = seg_text
+    # 仅对包含中文字符的句子做数字中文化
+    if not re.search(r"[\u4e00-\u9fff]", s):
+        return s
+    # 年份如 2026年 -> 二零二六年
+    digits_map = str.maketrans("0123456789", "零一二三四五六七八九")
+    s = re.sub(r"(\d{4})\s*年", lambda m: m.group(1).translate(digits_map) + "年", s)
+    # 百分比 50% -> 百分之五十
+    s = re.sub(r"(\d{1,3})\s*%", lambda m: "百分之" + _int_to_cn(int(m.group(1))), s)
+    # 月/日/号/点/分/秒/个/次/名/条/处/页/步/种/类/项/款/套/台/张/段
+    s = re.sub(
+        r"(?<![A-Za-z0-9._-])(\d{1,3})\s*(月|日|号|点|分|秒|个|次|名|条|处|页|步|种|类|项|款|套|台|张|段|镜|块)",
+        lambda m: _int_to_cn(int(m.group(1))) + m.group(2),
+        s
+    )
+    # 版本号 V3.2 -> V三点二
+    s = re.sub(r"(\d+)\.(\d+)", lambda m: _int_to_cn(int(m.group(1))) + "点" + m.group(2).translate(digits_map), s)
+    return s
+
+
 def split_script_into_segments(text: str):
     """
     智能将用户文案切分为适合字幕展示的单句/分镜，
@@ -134,11 +184,12 @@ def synthesize_custom_voice(text: str, output_audio: Path, output_srt: Path, spe
 
     with torch.inference_mode():
         for idx, seg_text in enumerate(segments):
+            tts_text = normalize_text_for_tts(seg_text)
             print(f"   [{idx + 1}/{len(segments)}] 正在生成: {seg_text[:24]}...")
             wave, sr, _ = infer_process(
                 pre_ref_audio,
                 pre_ref_text,
-                seg_text,
+                tts_text,
                 ema_model,
                 vocoder,
                 mel_spec_type="vocos",
