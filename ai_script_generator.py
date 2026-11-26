@@ -1048,10 +1048,10 @@ def analyze_telemetry_phases(beats: list, total_duration: float, video_path: Pat
                     })
         phases = refined
 
-    # 为每个阶段计算字数预算（黄金语速 4.2 字/秒）与序号
+    # 为每个阶段计算字数预算（黄金语速 4.2 字/秒）与序号（短过渡镜头如 1.2s 不再虚高保底 12 字）
     for idx, p in enumerate(phases):
         p['index'] = idx + 1
-        p['char_budget'] = max(12, int(round(p['duration'] * 4.2)))
+        p['char_budget'] = max(4, int(round(p['duration'] * 4.2)))
 
     return phases
 

@@ -2592,7 +2592,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                     RECORDINGS_DIR.resolve(),
                     OUTPUT_DIR.resolve()
                 ]
-                allowed_exts = {".mp4", ".mov", ".webm", ".mkv", ".mp3", ".wav", ".srt"}
+                allowed_exts = {".mp4", ".mov", ".webm", ".mkv", ".mp3", ".wav", ".srt", ".jpg", ".jpeg", ".png"}
                 is_in_allowed_dir = any(
                     req_path == r or str(req_path).startswith(str(r) + os.sep)
                     for r in allowed_roots
@@ -2606,7 +2606,17 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 return
 
             file_size = os.path.getsize(media_path)
-            mime = "video/mp4" if media_path.endswith(".mp4") else "audio/mpeg" if media_path.endswith(".mp3") else "text/plain; charset=utf-8"
+            low_p = media_path.lower()
+            if low_p.endswith(".mp4"):
+                mime = "video/mp4"
+            elif low_p.endswith(".mp3"):
+                mime = "audio/mpeg"
+            elif low_p.endswith((".jpg", ".jpeg")):
+                mime = "image/jpeg"
+            elif low_p.endswith(".png"):
+                mime = "image/png"
+            else:
+                mime = "text/plain; charset=utf-8"
 
             # 检查 Range 请求 (HTTP 206 Partial Content 支持，视频流拖拽与断点续传)
             range_header = self.headers.get("Range")
@@ -3050,7 +3060,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 
                 # 4. 【V3.2 导出后音画卡点自检报告 & 分镜九宫格拼图】
                 phase_metrics = align_res.get("phase_metrics") or []
-                check_grid_path = OUTPUT_DIR / f"checkgrid_{run_id}.jpg"
+                check_grid_path = OUTPUT_DIR / f"checkgrid_{ts}.jpg"
                 grid_url = ""
                 if phase_metrics:
                     grid_res = generate_sync_check_grid(final_video, phase_metrics, check_grid_path)
@@ -3060,7 +3070,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 # 5. 【V3.2 历史项目快照持久化】便于工作台左上角一键回载复现现场
                 try:
                     proj_snapshot = {
-                        "runId": run_id,
+                        "runId": ts,
                         "createdAt": time.strftime("%Y-%m-%d %H:%M:%S"),
                         "videoPath": str(video_path),
                         "videoName": video_path.name,
@@ -3070,7 +3080,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                         "srtUrl": f"/media?path={urllib.parse.quote(str(srt_path))}",
                         "gridUrl": grid_url,
                         "script": script,
-                        "voiceKey": voice_key,
+                        "voiceKey": voice_id,
                         "rate": rate,
                         "burnSubs": burn_subs,
                         "bilingualSubs": bilingual_subs,
@@ -3080,7 +3090,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                         "privacyBlurs": blur_zones,
                         "phaseMetrics": phase_metrics
                     }
-                    (OUTPUT_DIR / f"project_{run_id}.json").write_text(
+                    (OUTPUT_DIR / f"project_{ts}.json").write_text(
                         json.dumps(proj_snapshot, ensure_ascii=False, indent=2),
                         encoding="utf-8"
                     )
