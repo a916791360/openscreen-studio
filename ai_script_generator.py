@@ -732,6 +732,16 @@ def find_matching_openscreen_project(video_path: Path, override_proj: str = None
     scored_cands.sort(key=lambda x: x["score"], reverse=True)
     best = scored_cands[0]
 
+    # 【V3.2 防外部视频误匹配】：
+    # 非 OpenScreen 导出文件（如手机录屏 ScreenRecording_xxx.MP4）或时长差异过大（dur_diff >= 0.4s 且无时间戳因果证据）时，
+    # 严禁强行硬套毫不相干的旧 .openscreen 工程，应干净返回未匹配，交由 V3.2 视觉场景切换自动分镜接管！
+    if best["dur_diff"] >= 0.4 or (exp_ts is None and best["dur_diff"] >= 0.08):
+        return None, None, {
+            "matched": False,
+            "reason": "外部录屏视频（自动启用 V3.2 视觉场景切换智能分镜）",
+            "durDiff": round(best["dur_diff"], 3)
+        }
+
     confidence = "100%" if best["score"] >= 120 else ("85%" if best["score"] >= 80 else "60%")
     match_info = {
         "matched": True,
